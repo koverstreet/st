@@ -159,7 +159,7 @@ enum selection_type {
 	SEL_RECTANGULAR = 2
 };
 
-struct glyph {
+struct st_glyph {
 	char		c[UTF_SIZ];	/* character code */
 	unsigned char	mode;		/* attribute flags */
 	unsigned short	fg;		/* foreground  */
@@ -168,7 +168,7 @@ struct glyph {
 };
 
 struct tcursor {
-	struct glyph	attr;		/* current char attributes */
+	struct st_glyph	attr;		/* current char attributes */
 	int		x;
 	int		y;
 	char		state;
@@ -219,8 +219,8 @@ struct st_term {
 
 	int		row;	/* nb row */
 	int		col;	/* nb col */
-	struct glyph	**line;	/* screen */
-	struct glyph	**alt;	/* alternate screen */
+	struct st_glyph	**line;	/* screen */
+	struct st_glyph	**alt;	/* alternate screen */
 	bool		*dirty;	/* dirtyness of lines */
 	struct tcursor	c;	/* cursor */
 	struct tcursor	saved;
@@ -578,7 +578,7 @@ static void selcopy(struct st_window *xw)
 	struct st_term *term = &xw->term;
 	char *str, *ptr, *p;
 	int x, y, bufsize, is_selected = 0, size;
-	struct glyph *gp, *last;
+	struct st_glyph *gp, *last;
 
 	if (term->sel.bx == -1) {
 		str = NULL;
@@ -791,7 +791,7 @@ static void xclear(struct st_window *xw,
 }
 
 static void xdraws(struct st_window *xw,
-		   char *s, struct glyph base, int x, int y,
+		   char *s, struct st_glyph base, int x, int y,
 		   int charlen, int bytelen)
 {
 	int winx = borderpx + x * xw->cw, winy = borderpx + y * xw->ch,
@@ -1013,7 +1013,7 @@ static void xdrawcursor(struct st_window *xw)
 {
 	static int oldx = 0, oldy = 0;
 	int sl;
-	struct glyph g = { {' '}, ATTR_NULL, defaultbg, defaultcs, 0 };
+	struct st_glyph g = { {' '}, ATTR_NULL, defaultbg, defaultcs, 0 };
 
 	oldx = min(oldx, xw->term.col - 1);
 	oldy = min(oldy, xw->term.row - 1);
@@ -1049,7 +1049,7 @@ static void drawregion(struct st_window *xw,
 		       int x1, int y1, int x2, int y2)
 {
 	int ic, ib, x, y, ox, sl;
-	struct glyph base, new;
+	struct st_glyph base, new;
 	char buf[DRAW_BUF_SIZ];
 	bool ena_sel = xw->term.sel.bx != -1;
 
@@ -1326,7 +1326,7 @@ static void tnewline(struct st_term *term, int first_col)
 }
 
 static void tsetchar(struct st_term *term, char *c,
-		     struct glyph *attr, int x, int y)
+		     struct st_glyph *attr, int x, int y)
 {
 	static char *vt100_0[62] = {	/* 0x41 - 0x7e */
 		"↑", "↓", "→", "←", "█", "▚", "☃",	/* A - G */
@@ -1365,7 +1365,7 @@ static void tdeletechar(struct st_term *term, int n)
 	if (src < term->col) {
 		memmove(&term->line[term->c.y][dst],
 			&term->line[term->c.y][src],
-			size * sizeof(struct glyph));
+			size * sizeof(struct st_glyph));
 		tclearregion(term, term->col - n, term->c.y,
 			     term->col - 1, term->c.y, 0);
 	} else {
@@ -1385,7 +1385,7 @@ static void tinsertblank(struct st_term *term, int n)
 	if (dst < term->col) {
 		memmove(&term->line[term->c.y][dst],
 			&term->line[term->c.y][src],
-			size * sizeof(struct glyph));
+			size * sizeof(struct st_glyph));
 		tclearregion(term, src, term->c.y,
 			     dst - 1, term->c.y, 0);
 	} else {
@@ -2174,7 +2174,7 @@ static void tputc(struct st_window *xw,
 	if ((term->mode & MODE_INSERT) && term->c.x + 1 < term->col) {
 		memmove(&term->line[term->c.y][term->c.x + 1],
 			&term->line[term->c.y][term->c.x],
-			(term->col - term->c.x - 1) * sizeof(struct glyph));
+			(term->col - term->c.x - 1) * sizeof(struct st_glyph));
 	}
 
 	tsetchar(term, c, &term->c.attr, term->c.x, term->c.y);
@@ -2577,9 +2577,9 @@ static int tresize(struct st_term *term, int col, int row)
 			free(term->alt[i]);
 		}
 		memmove(term->line, term->line + slide,
-			row * sizeof(struct glyph *));
+			row * sizeof(struct st_glyph *));
 		memmove(term->alt, term->alt + slide,
-			row * sizeof(struct glyph *));
+			row * sizeof(struct st_glyph *));
 	}
 	for (i += row; i < term->row; i++) {
 		free(term->line[i]);
@@ -2587,16 +2587,16 @@ static int tresize(struct st_term *term, int col, int row)
 	}
 
 	/* resize to new height */
-	term->line = xrealloc(term->line, row * sizeof(struct glyph *));
-	term->alt = xrealloc(term->alt, row * sizeof(struct glyph *));
+	term->line = xrealloc(term->line, row * sizeof(struct st_glyph *));
+	term->alt = xrealloc(term->alt, row * sizeof(struct st_glyph *));
 	term->dirty = xrealloc(term->dirty, row * sizeof(*term->dirty));
 	term->tabs = xrealloc(term->tabs, col * sizeof(*term->tabs));
 
 	/* resize each row to new width, zero-pad if needed */
 	for (i = 0; i < minrow; i++) {
 		term->dirty[i] = 1;
-		term->line[i] = xrealloc(term->line[i], col * sizeof(struct glyph));
-		term->alt[i] = xrealloc(term->alt[i], col * sizeof(struct glyph));
+		term->line[i] = xrealloc(term->line[i], col * sizeof(struct st_glyph));
+		term->alt[i] = xrealloc(term->alt[i], col * sizeof(struct st_glyph));
 		for (x = mincol; x < col; x++) {
 			term->line[i][x].state = 0;
 			term->alt[i][x].state = 0;
@@ -2606,8 +2606,8 @@ static int tresize(struct st_term *term, int col, int row)
 	/* allocate any new rows */
 	for ( /* i == minrow */ ; i < row; i++) {
 		term->dirty[i] = 1;
-		term->line[i] = xcalloc(col, sizeof(struct glyph));
-		term->alt[i] = xcalloc(col, sizeof(struct glyph));
+		term->line[i] = xcalloc(col, sizeof(struct st_glyph));
+		term->alt[i] = xcalloc(col, sizeof(struct st_glyph));
 	}
 	if (col > term->col) {
 		bp = term->tabs + term->col;
@@ -2722,14 +2722,14 @@ static void tnew(struct st_term *term, int col, int row)
 	/* set screen size */
 	term->row = row;
 	term->col = col;
-	term->line = xmalloc(term->row * sizeof(struct glyph *));
-	term->alt = xmalloc(term->row * sizeof(struct glyph *));
+	term->line = xmalloc(term->row * sizeof(struct st_glyph *));
+	term->alt = xmalloc(term->row * sizeof(struct st_glyph *));
 	term->dirty = xmalloc(term->row * sizeof(*term->dirty));
 	term->tabs = xmalloc(term->col * sizeof(*term->tabs));
 
 	for (row = 0; row < term->row; row++) {
-		term->line[row] = xmalloc(term->col * sizeof(struct glyph));
-		term->alt[row] = xmalloc(term->col * sizeof(struct glyph));
+		term->line[row] = xmalloc(term->col * sizeof(struct st_glyph));
+		term->alt[row] = xmalloc(term->col * sizeof(struct st_glyph));
 		term->dirty[row] = 0;
 	}
 
