@@ -216,26 +216,17 @@ struct st_term {
 	bool		*tabs;
 };
 
-/* Purely graphic info */
-struct st_window {
-	Display		*dpy;
-	Colormap	cmap;
-	Window		win;
-	Drawable	buf;
-	Atom		xembed;
-	Atom		wmdeletewin;
-	XIM		xim;
-	XIC		xic;
-	XftDraw		*draw;
-	Visual		*vis;
-	int		scr;
-	bool		isfixed;	/* is fixed geometry? */
-	int		fx, fy, fw, fh;	/* fixed geometry */
-	int		tw, th;		/* tty width and height */
-	int		w, h;		/* window width and height */
-	int		ch;		/* char height */
-	int		cw;		/* char width  */
-	char		state;		/* focus, redraw, visible */
+/* Font structure */
+struct st_font {
+	int height;
+	int width;
+	int ascent;
+	int descent;
+	short lbearing;
+	short rbearing;
+	XftFont *match;
+	FcFontSet *set;
+	FcPattern *pattern;
 };
 
 struct st_key {
@@ -287,27 +278,33 @@ static void xzoom(const union st_arg *);
 /* Config.h for applying patches and the configuration. */
 #include "config.h"
 
-/* Font structure */
-struct st_font {
-	int height;
-	int width;
-	int ascent;
-	int descent;
-	short lbearing;
-	short rbearing;
-	XftFont *match;
-	FcFontSet *set;
-	FcPattern *pattern;
-};
+/* Purely graphic info */
+struct st_window {
+	XftColor	col[ARRAY_SIZE(colorname) < 256 ? 256 : ARRAY_SIZE(colorname)];
+	GC		gc;
+	Display		*dpy;
+	Colormap	cmap;
+	Window		win;
+	Drawable	buf;
+	Atom		xembed;
+	Atom		wmdeletewin;
+	XIM		xim;
+	XIC		xic;
+	XftDraw		*draw;
+	Visual		*vis;
+	struct st_font	font, bfont, ifont, ibfont;
 
-struct drawing_context {
-	XftColor col[ARRAY_SIZE(colorname) < 256 ? 256 : ARRAY_SIZE(colorname)];
-	struct st_font font, bfont, ifont, ibfont;
-	GC gc;
+	int		scr;
+	bool		isfixed;	/* is fixed geometry? */
+	int		fx, fy, fw, fh;	/* fixed geometry */
+	int		tw, th;		/* tty width and height */
+	int		w, h;		/* window width and height */
+	int		ch;		/* char height */
+	int		cw;		/* char width  */
+	char		state;		/* focus, redraw, visible */
 };
 
 /* Globals */
-static struct drawing_context dc;
 static struct st_window xw;
 static struct st_term term;
 static struct csi_escape csiescseq;
@@ -494,7 +491,7 @@ static int xsetcolorname(int x, const char *name)
 			if (!XftColorAllocValue
 			    (xw.dpy, xw.vis, xw.cmap, &color, &colour))
 				return 0;	/* something went wrong */
-			dc.col[x] = colour;
+			xw.col[x] = colour;
 			return 1;
 		} else if (16 + 216 <= x && x < 256) {
 			color.red = color.green = color.blue =
@@ -502,7 +499,7 @@ static int xsetcolorname(int x, const char *name)
 			if (!XftColorAllocValue
 			    (xw.dpy, xw.vis, xw.cmap, &color, &colour))
 				return 0;	/* something went wrong */
-			dc.col[x] = colour;
+			xw.col[x] = colour;
 			return 1;
 		} else {
 			name = colorname[x];
@@ -510,7 +507,7 @@ static int xsetcolorname(int x, const char *name)
 	}
 	if (!XftColorAllocName(xw.dpy, xw.vis, xw.cmap, name, &colour))
 		return 0;
-	dc.col[x] = colour;
+	xw.col[x] = colour;
 	return 1;
 }
 
@@ -769,7 +766,7 @@ static void selscroll(int orig, int n)
 static void xtermclear(int col1, int row1, int col2, int row2)
 {
 	XftDrawRect(xw.draw,
-		    &dc.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg],
+		    &xw.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg],
 		    borderpx + col1 * xw.cw,
 		    borderpx + row1 * xw.ch,
 		    (col2 - col1 + 1) * xw.cw, (row2 - row1 + 1) * xw.ch);
@@ -781,7 +778,7 @@ static void xtermclear(int col1, int row1, int col2, int row2)
 static void xclear(int x1, int y1, int x2, int y2)
 {
 	XftDrawRect(xw.draw,
-		    &dc.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg],
+		    &xw.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg],
 		    x1, y1, x2 - x1, y2 - y1);
 }
 
@@ -793,12 +790,12 @@ static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int by
 	int u8fl, u8fblen, u8cblen, doesexist;
 	char *u8c, *u8fs;
 	unsigned u8char;
-	struct st_font *font = &dc.font;
+	struct st_font *font = &xw.font;
 	FcResult fcres;
 	FcPattern *fcpattern, *fontpattern;
 	FcFontSet *fcsets[] = { NULL };
 	FcCharSet *fccharset;
-	XftColor *fg = &dc.col[base.fg], *bg = &dc.col[base.bg],
+	XftColor *fg = &xw.col[base.fg], *bg = &xw.col[base.bg],
 	    revfg, revbg;
 	XRenderColor colfg, colbg;
 
@@ -807,13 +804,13 @@ static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int by
 	if (base.mode & ATTR_BOLD) {
 		if (BETWEEN(base.fg, 0, 7)) {
 			/* basic system colors */
-			fg = &dc.col[base.fg + 8];
+			fg = &xw.col[base.fg + 8];
 		} else if (BETWEEN(base.fg, 16, 195)) {
 			/* 256 colors */
-			fg = &dc.col[base.fg + 36];
+			fg = &xw.col[base.fg + 36];
 		} else if (BETWEEN(base.fg, 232, 251)) {
 			/* greyscale */
-			fg = &dc.col[base.fg + 4];
+			fg = &xw.col[base.fg + 4];
 		}
 		/*
 		 * Those ranges will not be brightened:
@@ -821,22 +818,22 @@ static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int by
 		 *      196 - 231 – highest 256 color cube
 		 *      252 - 255 – brightest colors in greyscale
 		 */
-		font = &dc.bfont;
+		font = &xw.bfont;
 		frcflags = FRC_BOLD;
 	}
 
 	if (base.mode & ATTR_ITALIC) {
-		font = &dc.ifont;
+		font = &xw.ifont;
 		frcflags = FRC_ITALIC;
 	}
 	if ((base.mode & ATTR_ITALIC) && (base.mode & ATTR_BOLD)) {
-		font = &dc.ibfont;
+		font = &xw.ibfont;
 		frcflags = FRC_ITALICBOLD;
 	}
 
 	if (IS_SET(MODE_REVERSE)) {
-		if (fg == &dc.col[defaultfg]) {
-			fg = &dc.col[defaultbg];
+		if (fg == &xw.col[defaultfg]) {
+			fg = &xw.col[defaultbg];
 		} else {
 			colfg.red = ~fg->color.red;
 			colfg.green = ~fg->color.green;
@@ -847,8 +844,8 @@ static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int by
 			fg = &revfg;
 		}
 
-		if (bg == &dc.col[defaultbg]) {
-			bg = &dc.col[defaultfg];
+		if (bg == &xw.col[defaultbg]) {
+			bg = &xw.col[defaultfg];
 		} else {
 			colbg.red = ~bg->color.red;
 			colbg.green = ~bg->color.green;
@@ -1090,9 +1087,9 @@ static void drawregion(int x1, int y1, int x2, int y2)
 static void draw(void)
 {
 	drawregion(0, 0, term.col, term.row);
-	XCopyArea(xw.dpy, xw.buf, xw.win, dc.gc, 0, 0, xw.w, xw.h, 0, 0);
-	XSetForeground(xw.dpy, dc.gc,
-		       dc.col[IS_SET(MODE_REVERSE) ?
+	XCopyArea(xw.dpy, xw.buf, xw.win, xw.gc, 0, 0, xw.w, xw.h, 0, 0);
+	XSetForeground(xw.dpy, xw.gc,
+		       xw.col[IS_SET(MODE_REVERSE) ?
 			      defaultfg : defaultbg].pixel);
 }
 
@@ -2598,11 +2595,11 @@ static void xresize(int col, int row)
 	XFreePixmap(xw.dpy, xw.buf);
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, xw.w, xw.h,
 			       DefaultDepth(xw.dpy, xw.scr));
-	XSetForeground(xw.dpy, dc.gc,
-		       dc.
+	XSetForeground(xw.dpy, xw.gc,
+		       xw.
 		       col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg].
 		       pixel);
-	XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, xw.w, xw.h);
+	XFillRectangle(xw.dpy, xw.buf, xw.gc, 0, 0, xw.w, xw.h);
 
 	XftDrawChange(xw.draw, xw.buf);
 }
@@ -2718,7 +2715,7 @@ static void xloadcols(void)
 		if (!colorname[i])
 			continue;
 		if (!XftColorAllocName
-		    (xw.dpy, xw.vis, xw.cmap, colorname[i], &dc.col[i])) {
+		    (xw.dpy, xw.vis, xw.cmap, colorname[i], &xw.col[i])) {
 			die("Could not allocate color '%s'\n",
 			    colorname[i]);
 		}
@@ -2733,7 +2730,7 @@ static void xloadcols(void)
 				color.blue = sixd_to_16bit(b);
 				if (!XftColorAllocValue
 				    (xw.dpy, xw.vis, xw.cmap, &color,
-				     &dc.col[i])) {
+				     &xw.col[i])) {
 					die("Could not allocate color %d\n", i);
 				}
 				i++;
@@ -2744,7 +2741,7 @@ static void xloadcols(void)
 	for (r = 0; r < 24; r++, i++) {
 		color.red = color.green = color.blue = 0x0808 + 0x0a0a * r;
 		if (!XftColorAllocValue(xw.dpy, xw.vis, xw.cmap, &color,
-					&dc.col[i])) {
+					&xw.col[i])) {
 			die("Could not allocate color %d\n", i);
 		}
 	}
@@ -2847,26 +2844,26 @@ static void xloadfonts(char *fontstr, int fontsize)
 	FcConfigSubstitute(0, pattern, FcMatchPattern);
 	FcDefaultSubstitute(pattern);
 
-	if (xloadfont(&dc.font, pattern))
+	if (xloadfont(&xw.font, pattern))
 		die("st: can't open font %s\n", fontstr);
 
 	/* Setting character width and height. */
-	xw.cw = dc.font.width;
-	xw.ch = dc.font.height;
+	xw.cw = xw.font.width;
+	xw.ch = xw.font.height;
 
 	FcPatternDel(pattern, FC_SLANT);
 	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ITALIC);
-	if (xloadfont(&dc.ifont, pattern))
+	if (xloadfont(&xw.ifont, pattern))
 		die("st: can't open font %s\n", fontstr);
 
 	FcPatternDel(pattern, FC_WEIGHT);
 	FcPatternAddInteger(pattern, FC_WEIGHT, FC_WEIGHT_BOLD);
-	if (xloadfont(&dc.ibfont, pattern))
+	if (xloadfont(&xw.ibfont, pattern))
 		die("st: can't open font %s\n", fontstr);
 
 	FcPatternDel(pattern, FC_SLANT);
 	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ROMAN);
-	if (xloadfont(&dc.bfont, pattern))
+	if (xloadfont(&xw.bfont, pattern))
 		die("st: can't open font %s\n", fontstr);
 
 	FcPatternDestroy(pattern);
@@ -2888,18 +2885,18 @@ static void xunloadfonts(void)
 	frccur = -1;
 	frclen = 0;
 
-	XftFontClose(xw.dpy, dc.font.match);
-	FcPatternDestroy(dc.font.pattern);
-	FcFontSetDestroy(dc.font.set);
-	XftFontClose(xw.dpy, dc.bfont.match);
-	FcPatternDestroy(dc.bfont.pattern);
-	FcFontSetDestroy(dc.bfont.set);
-	XftFontClose(xw.dpy, dc.ifont.match);
-	FcPatternDestroy(dc.ifont.pattern);
-	FcFontSetDestroy(dc.ifont.set);
-	XftFontClose(xw.dpy, dc.ibfont.match);
-	FcPatternDestroy(dc.ibfont.pattern);
-	FcFontSetDestroy(dc.ibfont.set);
+	XftFontClose(xw.dpy, xw.font.match);
+	FcPatternDestroy(xw.font.pattern);
+	FcFontSetDestroy(xw.font.set);
+	XftFontClose(xw.dpy, xw.bfont.match);
+	FcPatternDestroy(xw.bfont.pattern);
+	FcFontSetDestroy(xw.bfont.set);
+	XftFontClose(xw.dpy, xw.ifont.match);
+	FcPatternDestroy(xw.ifont.pattern);
+	FcFontSetDestroy(xw.ifont.set);
+	XftFontClose(xw.dpy, xw.ibfont.match);
+	FcPatternDestroy(xw.ibfont.pattern);
+	FcFontSetDestroy(xw.ibfont.set);
 }
 
 static void xzoom(const union st_arg *arg)
@@ -2954,8 +2951,8 @@ static void xinit(void)
 	}
 
 	/* Events */
-	attrs.background_pixel = dc.col[defaultbg].pixel;
-	attrs.border_pixel = dc.col[defaultbg].pixel;
+	attrs.background_pixel = xw.col[defaultbg].pixel;
+	attrs.border_pixel = xw.col[defaultbg].pixel;
 	attrs.bit_gravity = NorthWestGravity;
 	attrs.event_mask = FocusChangeMask | KeyPressMask
 	    | ExposureMask | VisibilityChangeMask | StructureNotifyMask
@@ -2973,11 +2970,11 @@ static void xinit(void)
 
 	memset(&gcvalues, 0, sizeof(gcvalues));
 	gcvalues.graphics_exposures = False;
-	dc.gc = XCreateGC(xw.dpy, parent, GCGraphicsExposures, &gcvalues);
+	xw.gc = XCreateGC(xw.dpy, parent, GCGraphicsExposures, &gcvalues);
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, xw.w, xw.h,
 			       DefaultDepth(xw.dpy, xw.scr));
-	XSetForeground(xw.dpy, dc.gc, dc.col[defaultbg].pixel);
-	XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, xw.w, xw.h);
+	XSetForeground(xw.dpy, xw.gc, xw.col[defaultbg].pixel);
+	XFillRectangle(xw.dpy, xw.buf, xw.gc, 0, 0, xw.w, xw.h);
 
 	/* Xft rendering context */
 	xw.draw = XftDrawCreate(xw.dpy, xw.buf, xw.vis, xw.cmap);
