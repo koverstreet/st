@@ -1950,12 +1950,9 @@ static void strhandle(struct st_window *xw)
 
 /* more random input code */
 
-static void tputc(struct st_window *xw,
-		  char *c, int len)
+static void tputc(struct st_window *xw, unsigned c)
 {
-	unsigned ucs;
-	unsigned char ascii = *c;
-	bool control = ascii < '\x20' || ascii == 0177;
+	bool control = c < '\x20' || c == 0177;
 	struct st_term *term = &xw->term;
 
 	/*
@@ -1963,7 +1960,10 @@ static void tputc(struct st_window *xw,
 	 * because it can use some control codes as part of the sequence.
 	 */
 	if (term->esc & ESC_STR) {
-		switch (ascii) {
+		unsigned len;
+		unsigned char buf[FC_UTF8_MAX_LEN];
+
+		switch (c) {
 		case '\033':
 			term->esc = ESC_START | ESC_STR_END;
 			break;
@@ -1972,10 +1972,12 @@ static void tputc(struct st_window *xw,
 			strhandle(xw);
 			break;
 		default:
+			len = FcUcs4ToUtf8(c, buf);
+
 			if (term->strescseq.len + len <
 			    sizeof(term->strescseq.buf) - 1) {
 				memmove(&term->strescseq.buf[term->strescseq.len],
-					c, len);
+					buf, len);
 				term->strescseq.len += len;
 			} else {
 				/*
@@ -2002,7 +2004,7 @@ static void tputc(struct st_window *xw,
 	 * they must not cause conflicts with sequences.
 	 */
 	if (control) {
-		switch (ascii) {
+		switch (c) {
 		case '\t':	/* HT */
 			tputtab(term, 1);
 			return;
@@ -2048,8 +2050,8 @@ static void tputc(struct st_window *xw,
 		}
 	} else if (term->esc & ESC_START) {
 		if (term->esc & ESC_CSI) {
-			term->csiescseq.buf[term->csiescseq.len++] = ascii;
-			if (BETWEEN(ascii, 0x40, 0x7E)
+			term->csiescseq.buf[term->csiescseq.len++] = c;
+			if (BETWEEN(c, 0x40, 0x7E)
 			    || term->csiescseq.len >= sizeof(term->csiescseq.buf) - 1) {
 				term->esc = 0;
 				csiparse(&term->csiescseq);
@@ -2057,10 +2059,10 @@ static void tputc(struct st_window *xw,
 			}
 		} else if (term->esc & ESC_STR_END) {
 			term->esc = 0;
-			if (ascii == '\\')
+			if (c == '\\')
 				strhandle(xw);
 		} else if (term->esc & ESC_ALTCHARSET) {
-			switch (ascii) {
+			switch (c) {
 			case '0':	/* Line drawing set */
 				term->c.attr.gfx = 1;
 				break;
@@ -2076,11 +2078,11 @@ static void tputc(struct st_window *xw,
 			default:
 				fprintf(stderr,
 					"esc unhandled charset: ESC ( %c\n",
-					ascii);
+					c);
 			}
 			term->esc = 0;
 		} else if (term->esc & ESC_TEST) {
-			if (ascii == '8') {	/* DEC screen alignment test. */
+			if (c == '8') {	/* DEC screen alignment test. */
 				struct coord p;
 
 				for (p.x = 0; p.x < term->size.x; ++p.x)
@@ -2089,7 +2091,7 @@ static void tputc(struct st_window *xw,
 			}
 			term->esc = 0;
 		} else {
-			switch (ascii) {
+			switch (c) {
 			case '[':
 				term->esc |= ESC_CSI;
 				break;
@@ -2102,7 +2104,7 @@ static void tputc(struct st_window *xw,
 			case ']':	/* OSC -- Operating System Command */
 			case 'k':	/* old title set compatibility */
 				strreset(&term->strescseq);
-				term->strescseq.type = ascii;
+				term->strescseq.type = c;
 				term->esc |= ESC_STR;
 				break;
 			case '(':	/* set primary charset G0 */
@@ -2167,8 +2169,8 @@ static void tputc(struct st_window *xw,
 			default:
 				fprintf(stderr,
 					"erresc: unknown sequence ESC 0x%02X '%c'\n",
-					(unsigned char) ascii,
-					isprint(ascii) ? ascii : '.');
+					(unsigned char) c,
+					isprint(c) ? c : '.');
 				term->esc = 0;
 			}
 		}
@@ -2196,36 +2198,37 @@ static void tputc(struct st_window *xw,
 			term_pos(term, term->c.pos),
 			(term->size.x - term->c.pos.x - 1) * sizeof(struct st_glyph));
 
-	FcUtf8ToUcs4((unsigned char *) c, &ucs, len);
-
-	tsetchar(term, ucs, term->c.pos);
+	tsetchar(term, c, term->c.pos);
 	if (term->c.pos.x + 1 < term->size.x)
 		tmoverel(term, 1, 0);
 	else
 		term->c.wrapnext = 1;
 }
 
-static void techo(struct st_window *xw,
-		  char *buf, int len)
+static void techo(struct st_window *xw, char *buf, int len)
 {
 	for (; len > 0; buf++, len--) {
 		char c = *buf;
 
 		if (c == '\033') {	/* escape */
-			tputc(xw, "^", 1);
-			tputc(xw, "[", 1);
+			tputc(xw, '^');
+			tputc(xw, '[');
 		} else if (c < '\x20') {	/* control code */
 			if (c != '\n' && c != '\r' && c != '\t') {
 				c |= '\x40';
-				tputc(xw, "^", 1);
+				tputc(xw, '^');
 			}
-			tputc(xw, &c, 1);
+			tputc(xw, c);
 		} else {
 			break;
 		}
 	}
-	if (len)
-		tputc(xw, buf, len);
+	if (len) {
+		unsigned ucs;
+
+		FcUtf8ToUcs4((unsigned char *) buf, &ucs, len);
+		tputc(xw, ucs);
+	}
 }
 
 static char *kmap(struct st_term *term, KeySym k, unsigned state)
@@ -2354,7 +2357,7 @@ static void ttyread(struct st_window *xw)
 		if (charsize > term->cmdbuflen)
 			break;
 
-		tputc(xw, (char *) ptr, charsize);
+		tputc(xw, ucs);
 		ptr += charsize;
 		term->cmdbuflen -= charsize;
 	}
