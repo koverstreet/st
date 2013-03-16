@@ -1,0 +1,12 @@
+.*
+*.o
+*~
+
+st
+config.h
+
+tags
+cscope.*
+ncscope.*
+
+!.gitignore
