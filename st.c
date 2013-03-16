@@ -27,12 +27,6 @@
 #include <X11/Xft/Xft.h>
 #include <fontconfig/fontconfig.h>
 
-#define Glyph Glyph_
-#define Font Font_
-#define Draw XftDraw *
-#define Colour XftColor
-#define Colourmap Colormap
-
 #if   defined(__linux)
 #include <pty.h>
 #elif defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
@@ -140,137 +134,131 @@ enum selection_type {
 	SEL_RECTANGULAR = 2
 };
 
-typedef unsigned char uchar;
-typedef unsigned int uint;
-typedef unsigned long ulong;
-typedef unsigned short ushort;
+struct glyph {
+	char		c[UTF_SIZ];	/* character code */
+	unsigned char	mode;		/* attribute flags */
+	unsigned short	fg;		/* foreground  */
+	unsigned short	bg;		/* background  */
+	unsigned char	state;		/* state flags    */
+};
 
-typedef struct {
-	char c[UTF_SIZ];	/* character code */
-	uchar mode;		/* attribute flags */
-	ushort fg;		/* foreground  */
-	ushort bg;		/* background  */
-	uchar state;		/* state flags    */
-} Glyph;
-
-typedef Glyph *Line;
-
-typedef struct {
-	Glyph attr;		/* current char attributes */
-	int x;
-	int y;
-	char state;
-} TCursor;
+struct tcursor {
+	struct glyph	attr;		/* current char attributes */
+	int		x;
+	int		y;
+	char		state;
+};
 
 /* CSI Escape sequence structs */
 /* ESC '[' [[ [<priv>] <arg> [;]] <mode>] */
-typedef struct {
-	char buf[ESC_BUF_SIZ];	/* raw string */
-	int len;		/* raw string length */
-	char priv;
-	int arg[ESC_ARG_SIZ];
-	int narg;		/* nb of args */
-	char mode;
-} CSIEscape;
+struct csi_escape {
+	char		buf[ESC_BUF_SIZ]; /* raw string */
+	int		len;		/* raw string length */
+	char		priv;
+	int		arg[ESC_ARG_SIZ];
+	int		narg;		/* nb of args */
+	char		mode;
+};
 
 /* STR Escape sequence structs */
 /* ESC type [[ [<priv>] <arg> [;]] <mode>] ESC '\' */
-typedef struct {
-	char type;		/* ESC type ... */
-	char buf[STR_BUF_SIZ];	/* raw string */
-	int len;		/* raw string length */
-	char *args[STR_ARG_SIZ];
-	int narg;		/* nb of args */
-} STREscape;
+struct str_escape {
+	char		type;		/* ESC type ... */
+	char		buf[STR_BUF_SIZ]; /* raw string */
+	int		len;		/* raw string length */
+	char		*args[STR_ARG_SIZ];
+	int		narg;		/* nb of args */
+};
 
 /* Internal representation of the screen */
-typedef struct {
-	int row;		/* nb row */
-	int col;		/* nb col */
-	Line *line;		/* screen */
-	Line *alt;		/* alternate screen */
-	bool *dirty;		/* dirtyness of lines */
-	TCursor c;		/* cursor */
-	int top;		/* top    scroll limit */
-	int bot;		/* bottom scroll limit */
-	int mode;		/* terminal mode flags */
-	int esc;		/* escape state flags */
-	bool numlock;		/* lock numbers in keyboard */
-	bool *tabs;
-} Term;
+struct st_term {
+	int		row;	/* nb row */
+	int		col;	/* nb col */
+	struct glyph	**line;	/* screen */
+	struct glyph	**alt;	/* alternate screen */
+	bool		*dirty;	/* dirtyness of lines */
+	struct tcursor	c;	/* cursor */
+	int		top;	/* top    scroll limit */
+	int		bot;	/* bottom scroll limit */
+	int		mode;	/* terminal mode flags */
+	int		esc;	/* escape state flags */
+	bool		numlock;/* lock numbers in keyboard */
+	bool		*tabs;
+};
 
 /* Purely graphic info */
-typedef struct {
-	Display *dpy;
-	Colourmap cmap;
-	Window win;
-	Drawable buf;
-	Atom xembed, wmdeletewin;
-	XIM xim;
-	XIC xic;
-	Draw draw;
-	Visual *vis;
-	int scr;
-	bool isfixed;		/* is fixed geometry? */
-	int fx, fy, fw, fh;	/* fixed geometry */
-	int tw, th;		/* tty width and height */
-	int w, h;		/* window width and height */
-	int ch;			/* char height */
-	int cw;			/* char width  */
-	char state;		/* focus, redraw, visible */
-} XWindow;
+struct st_window {
+	Display		*dpy;
+	Colormap	cmap;
+	Window		win;
+	Drawable	buf;
+	Atom		xembed;
+	Atom		wmdeletewin;
+	XIM		xim;
+	XIC		xic;
+	XftDraw		*draw;
+	Visual		*vis;
+	int		scr;
+	bool		isfixed;	/* is fixed geometry? */
+	int		fx, fy, fw, fh;	/* fixed geometry */
+	int		tw, th;		/* tty width and height */
+	int		w, h;		/* window width and height */
+	int		ch;		/* char height */
+	int		cw;		/* char width  */
+	char		state;		/* focus, redraw, visible */
+};
 
-typedef struct {
-	KeySym k;
-	uint mask;
-	char s[ESC_BUF_SIZ];
+struct st_key {
+	KeySym		k;
+	unsigned	mask;
+	char		s[ESC_BUF_SIZ];
 	/* three valued logic variables: 0 indifferent, 1 on, -1 off */
-	signed char appkey;	/* application keypad */
-	signed char appcursor;	/* application cursor */
-	signed char crlf;	/* crlf mode          */
-} Key;
+	signed char	appkey;		/* application keypad */
+	signed char	appcursor;	/* application cursor */
+	signed char	crlf;		/* crlf mode          */
+};
 
 /* TODO: use better name for vars... */
-typedef struct {
-	int mode;
-	int type;
-	int bx, by;
-	int ex, ey;
+struct st_selection {
+	int		mode;
+	int		type;
+	int		bx, by;
+	int		ex, ey;
 	struct {
-		int x, y;
+		int	x, y;
 	} b, e;
-	char *clip;
-	Atom xtarget;
-	bool alt;
-	struct timeval tclick1;
-	struct timeval tclick2;
-} Selection;
+	char		*clip;
+	Atom		xtarget;
+	bool		alt;
+	struct timeval	tclick1;
+	struct timeval	tclick2;
+};
 
-typedef union {
-	int i;
-	unsigned int ui;
-	float f;
-	const void *v;
-} Arg;
+union st_arg {
+	int		i;
+	unsigned int	ui;
+	float		f;
+	const void	*v;
+};
 
-typedef struct {
-	unsigned int mod;
-	KeySym keysym;
-	void (*func) (const Arg *);
-	const Arg arg;
-} Shortcut;
+struct st_shortcut {
+	unsigned int	mod;
+	KeySym		keysym;
+	void (*func) (const union st_arg *);
+	const union st_arg arg;
+};
 
 /* function definitions used in config.h */
-static void clippaste(const Arg *);
-static void numlock(const Arg *);
-static void selpaste(const Arg *);
-static void xzoom(const Arg *);
+static void clippaste(const union st_arg *);
+static void numlock(const union st_arg *);
+static void selpaste(const union st_arg *);
+static void xzoom(const union st_arg *);
 
 /* Config.h for applying patches and the configuration. */
 #include "config.h"
 
 /* Font structure */
-typedef struct {
+struct st_font {
 	int height;
 	int width;
 	int ascent;
@@ -280,24 +268,23 @@ typedef struct {
 	XftFont *match;
 	FcFontSet *set;
 	FcPattern *pattern;
-} Font;
+};
 
-/* Drawing Context */
-typedef struct {
-	Colour col[LEN(colorname) < 256 ? 256 : LEN(colorname)];
-	Font font, bfont, ifont, ibfont;
+struct drawing_context {
+	XftColor col[LEN(colorname) < 256 ? 256 : LEN(colorname)];
+	struct st_font font, bfont, ifont, ibfont;
 	GC gc;
-} DC;
+};
 
 /* Globals */
-static DC dc;
-static XWindow xw;
-static Term term;
-static CSIEscape csiescseq;
-static STREscape strescseq;
+static struct drawing_context dc;
+static struct st_window xw;
+static struct st_term term;
+static struct csi_escape csiescseq;
+static struct str_escape strescseq;
 static int cmdfd;
 static pid_t pid;
-static Selection sel;
+static struct st_selection sel;
 static int iofd = -1;
 static char **opt_cmd = NULL;
 static char *opt_io = NULL;
@@ -317,18 +304,18 @@ enum {
 	FRC_ITALICBOLD
 };
 
-typedef struct {
+struct st_fontcache {
 	XftFont *font;
 	long c;
 	int flags;
-} Fontcache;
+};
 
 /*
  * Fontcache is a ring buffer, with frccur as current position and frclen as
  * the current length of used elements.
  */
 
-static Fontcache frc[1024];
+static struct st_fontcache frc[1024];
 static int frccur = -1, frclen = 0;
 
 /* Random utility code */
@@ -441,14 +428,14 @@ static int utf8size(char *s)
 	return FcUtf8ToUcs4((unsigned char *) s, &ucs, UTF_SIZ);
 }
 
-static ushort sixd_to_16bit(int x)
+static unsigned short sixd_to_16bit(int x)
 {
 	return x == 0 ? 0 : 0x3737 + 0x2828 * x;
 }
 
 /* X utility code */
 
-static bool match(uint mask, uint state)
+static bool match(unsigned mask, uint state)
 {
 	state &= ~(ignoremod);
 
@@ -464,7 +451,7 @@ static bool match(uint mask, uint state)
 static int xsetcolorname(int x, const char *name)
 {
 	XRenderColor color = {.alpha = 0xffff };
-	Colour colour;
+	XftColor colour;
 	if (x < 0 || x > LEN(colorname))
 		return -1;
 	if (!name) {
@@ -535,7 +522,7 @@ static void xsetsel(char *str)
 	XSetSelectionOwner(xw.dpy, clipboard, xw.win, CurrentTime);
 }
 
-void ttywrite(const char *s, size_t n)
+static void ttywrite(const char *s, size_t n)
 {
 	if (write(cmdfd, s, n) == -1)
 		die("write error on tty: %s\n", SERRNO);
@@ -591,7 +578,7 @@ static void selcopy(void)
 {
 	char *str, *ptr, *p;
 	int x, y, bufsize, is_selected = 0, size;
-	Glyph *gp, *last;
+	struct glyph *gp, *last;
 
 	if (sel.bx == -1) {
 		str = NULL;
@@ -632,9 +619,9 @@ static void selcopy(void)
 
 static void selnotify(XEvent *e)
 {
-	ulong nitems, ofs, rem;
+	unsigned long nitems, ofs, rem;
 	int format;
-	uchar *data;
+	unsigned char *data;
 	Atom type;
 
 	ofs = 0;
@@ -653,13 +640,13 @@ static void selnotify(XEvent *e)
 	} while (rem > 0);
 }
 
-static void selpaste(const Arg *dummy)
+static void selpaste(const union st_arg * dummy)
 {
 	XConvertSelection(xw.dpy, XA_PRIMARY, sel.xtarget, XA_PRIMARY,
 			  xw.win, CurrentTime);
 }
 
-static void clippaste(const Arg *dummy)
+static void clippaste(const union st_arg * dummy)
 {
 	Atom clipboard;
 
@@ -697,12 +684,12 @@ static void selrequest(XEvent *e)
 		string = sel.xtarget;
 		XChangeProperty(xsre->display, xsre->requestor,
 				xsre->property, XA_ATOM, 32,
-				PropModeReplace, (uchar *) & string, 1);
+				PropModeReplace, (unsigned char *) & string, 1);
 		xev.property = xsre->property;
 	} else if (xsre->target == sel.xtarget && sel.clip != NULL) {
 		XChangeProperty(xsre->display, xsre->requestor,
 				xsre->property, xsre->target, 8,
-				PropModeReplace, (uchar *) sel.clip,
+				PropModeReplace, (unsigned char *) sel.clip,
 				strlen(sel.clip));
 		xev.property = xsre->property;
 	}
@@ -768,7 +755,7 @@ static void xclear(int x1, int y1, int x2, int y2)
 		    x1, y1, x2 - x1, y2 - y1);
 }
 
-void xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen)
+static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int bytelen)
 {
 	int winx = borderpx + x * xw.cw, winy = borderpx + y * xw.ch,
 	    width = charlen * xw.cw, xp, i;
@@ -776,12 +763,12 @@ void xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen)
 	int u8fl, u8fblen, u8cblen, doesexist;
 	char *u8c, *u8fs;
 	unsigned u8char;
-	Font *font = &dc.font;
+	struct st_font *font = &dc.font;
 	FcResult fcres;
 	FcPattern *fcpattern, *fontpattern;
 	FcFontSet *fcsets[] = { NULL };
 	FcCharSet *fccharset;
-	Colour *fg = &dc.col[base.fg], *bg = &dc.col[base.bg],
+	XftColor *fg = &dc.col[base.fg], *bg = &dc.col[base.bg],
 	    *temp, revfg, revbg;
 	XRenderColor colfg, colbg;
 
@@ -992,7 +979,7 @@ static void xdrawcursor(void)
 {
 	static int oldx = 0, oldy = 0;
 	int sl;
-	Glyph g = { {' '}, ATTR_NULL, defaultbg, defaultcs, 0 };
+	struct glyph g = { {' '}, ATTR_NULL, defaultbg, defaultcs, 0 };
 
 	LIMIT(oldx, 0, term.col - 1);
 	LIMIT(oldy, 0, term.row - 1);
@@ -1027,7 +1014,7 @@ static void xdrawcursor(void)
 static void drawregion(int x1, int y1, int x2, int y2)
 {
 	int ic, ib, x, y, ox, sl;
-	Glyph base, new;
+	struct glyph base, new;
 	char buf[DRAW_BUF_SIZ];
 	bool ena_sel = sel.bx != -1;
 
@@ -1128,7 +1115,7 @@ static void csiparse(void)
 static void csidump(void)
 {
 	int i;
-	uint c;
+	unsigned c;
 
 	printf("ESC[");
 	for (i = 0; i < csiescseq.len; i++) {
@@ -1186,7 +1173,7 @@ static void tclearregion(int x1, int y1, int x2, int y2, int bce)
 static void tscrolldown(int orig, int n)
 {
 	int i;
-	Line temp;
+	struct glyph *temp;
 
 	LIMIT(n, 0, term.bot - orig + 1);
 
@@ -1207,7 +1194,7 @@ static void tscrolldown(int orig, int n)
 static void tscrollup(int orig, int n)
 {
 	int i;
-	Line temp;
+	struct glyph *temp;
 	LIMIT(n, 0, term.bot - orig + 1);
 
 	tclearregion(0, orig, term.col - 1, orig + n - 1, 0);
@@ -1250,7 +1237,7 @@ static void tmoveato(int x, int y)
 
 static void tcursor(int mode)
 {
-	static TCursor c;
+	static struct tcursor c;
 
 	if (mode == CURSOR_SAVE) {
 		c = term.c;
@@ -1262,9 +1249,9 @@ static void tcursor(int mode)
 
 static void treset(void)
 {
-	uint i;
+	unsigned i;
 
-	term.c = (TCursor) { {
+	term.c = (struct tcursor) { {
 	.mode = ATTR_NULL,.fg = defaultfg,.bg = defaultbg},.x = 0,.y =
 	    0,.state = CURSOR_DEFAULT};
 
@@ -1282,7 +1269,7 @@ static void treset(void)
 
 static void tputtab(bool forward)
 {
-	uint x = term.c.x;
+	unsigned x = term.c.x;
 
 	if (forward) {
 		if (x == term.col)
@@ -1310,7 +1297,7 @@ static void tnewline(int first_col)
 	tmoveto(first_col ? 0 : term.c.x, y);
 }
 
-static void tsetchar(char *c, Glyph *attr, int x, int y)
+static void tsetchar(char *c, struct glyph *attr, int x, int y)
 {
 	static char *vt100_0[62] = {	/* 0x41 - 0x7e */
 		"↑", "↓", "→", "←", "█", "▚", "☃",	/* A - G */
@@ -1353,7 +1340,7 @@ static void tdeletechar(int n)
 	}
 
 	memmove(&term.line[term.c.y][dst], &term.line[term.c.y][src],
-		size * sizeof(Glyph));
+		size * sizeof(struct glyph));
 	tclearregion(term.col - n, term.c.y, term.col - 1, term.c.y, 0);
 }
 
@@ -1372,7 +1359,7 @@ static void tinsertblank(int n)
 	}
 
 	memmove(&term.line[term.c.y][dst], &term.line[term.c.y][src],
-		size * sizeof(Glyph));
+		size * sizeof(struct glyph));
 	tclearregion(src, term.c.y, dst - 1, term.c.y, 0);
 }
 
@@ -1512,7 +1499,7 @@ static void tsetscroll(int t, int b)
 
 static void tswapscreen(void)
 {
-	Line *tmp = term.line;
+	struct glyph **tmp = term.line;
 
 	term.line = term.alt;
 	term.alt = tmp;
@@ -1811,7 +1798,7 @@ static void strparse(void)
 static void strdump(void)
 {
 	int i;
-	uint c;
+	unsigned c;
 
 	printf("ESC%c", strescseq.type);
 	for (i = 0; i < strescseq.len; i++) {
@@ -1897,7 +1884,7 @@ static void strhandle(void)
 
 static void tputc(char *c, int len)
 {
-	uchar ascii = *c;
+	unsigned char ascii = *c;
 	bool control = ascii < '\x20' || ascii == 0177;
 
 	if (iofd != -1) {
@@ -2122,7 +2109,7 @@ static void tputc(char *c, int len)
 			default:
 				fprintf(stderr,
 					"erresc: unknown sequence ESC 0x%02X '%c'\n",
-					(uchar) ascii,
+					(unsigned char) ascii,
 					isprint(ascii) ? ascii : '.');
 				term.esc = 0;
 			}
@@ -2146,7 +2133,7 @@ static void tputc(char *c, int len)
 	if (IS_SET(MODE_INSERT) && term.c.x + 1 < term.col) {
 		memmove(&term.line[term.c.y][term.c.x + 1],
 			&term.line[term.c.y][term.c.x],
-			(term.col - term.c.x - 1) * sizeof(Glyph));
+			(term.col - term.c.x - 1) * sizeof(struct glyph));
 	}
 
 	tsetchar(c, &term.c.attr, term.c.x, term.c.y);
@@ -2179,10 +2166,10 @@ static void techo(char *buf, int len)
 		tputc(buf, len);
 }
 
-static char *kmap(KeySym k, uint state)
+static char *kmap(KeySym k, unsigned state)
 {
-	uint mask;
-	Key *kp;
+	unsigned mask;
+	struct st_key *kp;
 	int i;
 
 	/* Check for mapped keys out of X11 function keys. */
@@ -2236,7 +2223,7 @@ static void kpress(XEvent *ev)
 	char xstr[31], buf[32], *customkey, *cp = buf;
 	int len;
 	Status status;
-	Shortcut *bp;
+	struct st_shortcut *bp;
 
 	if (IS_SET(MODE_KBDLOCK))
 		return;
@@ -2329,7 +2316,7 @@ static int y2row(int y)
 static void getbuttoninfo(XEvent *e)
 {
 	int type;
-	uint state = e->xbutton.state & ~Button1Mask;
+	unsigned state = e->xbutton.state & ~Button1Mask;
 
 	sel.alt = IS_SET(MODE_ALTSCREEN);
 
@@ -2450,8 +2437,8 @@ static void brelease(XEvent *e)
 				sel.bx = sel.ex;
 				while (sel.bx > 0
 				       && term.line[sel.ey][sel.bx -
-							    1].state &
-				       GLYPH_SET
+							    1].
+				       state & GLYPH_SET
 				       && term.line[sel.ey][sel.bx -
 							    1].c[0] !=
 				       ' ') {
@@ -2460,8 +2447,8 @@ static void brelease(XEvent *e)
 				sel.b.x = sel.bx;
 				while (sel.ex < term.col - 1
 				       && term.line[sel.ey][sel.ex +
-							    1].state &
-				       GLYPH_SET
+							    1].
+				       state & GLYPH_SET
 				       && term.line[sel.ey][sel.ex +
 							    1].c[0] !=
 				       ' ') {
@@ -2540,8 +2527,10 @@ static int tresize(int col, int row)
 			free(term.line[i]);
 			free(term.alt[i]);
 		}
-		memmove(term.line, term.line + slide, row * sizeof(Line));
-		memmove(term.alt, term.alt + slide, row * sizeof(Line));
+		memmove(term.line, term.line + slide,
+			row * sizeof(struct glyph *));
+		memmove(term.alt, term.alt + slide,
+			row * sizeof(struct glyph *));
 	}
 	for (i += row; i < term.row; i++) {
 		free(term.line[i]);
@@ -2549,16 +2538,16 @@ static int tresize(int col, int row)
 	}
 
 	/* resize to new height */
-	term.line = xrealloc(term.line, row * sizeof(Line));
-	term.alt = xrealloc(term.alt, row * sizeof(Line));
+	term.line = xrealloc(term.line, row * sizeof(struct glyph *));
+	term.alt = xrealloc(term.alt, row * sizeof(struct glyph *));
 	term.dirty = xrealloc(term.dirty, row * sizeof(*term.dirty));
 	term.tabs = xrealloc(term.tabs, col * sizeof(*term.tabs));
 
 	/* resize each row to new width, zero-pad if needed */
 	for (i = 0; i < minrow; i++) {
 		term.dirty[i] = 1;
-		term.line[i] = xrealloc(term.line[i], col * sizeof(Glyph));
-		term.alt[i] = xrealloc(term.alt[i], col * sizeof(Glyph));
+		term.line[i] = xrealloc(term.line[i], col * sizeof(struct glyph));
+		term.alt[i] = xrealloc(term.alt[i], col * sizeof(struct glyph));
 		for (x = mincol; x < col; x++) {
 			term.line[i][x].state = 0;
 			term.alt[i][x].state = 0;
@@ -2568,8 +2557,8 @@ static int tresize(int col, int row)
 	/* allocate any new rows */
 	for ( /* i == minrow */ ; i < row; i++) {
 		term.dirty[i] = 1;
-		term.line[i] = xcalloc(col, sizeof(Glyph));
-		term.alt[i] = xcalloc(col, sizeof(Glyph));
+		term.line[i] = xcalloc(col, sizeof(struct glyph));
+		term.alt[i] = xcalloc(col, sizeof(struct glyph));
 	}
 	if (col > term.col) {
 		bp = term.tabs + term.col;
@@ -2601,8 +2590,9 @@ static void xresize(int col, int row)
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, xw.w, xw.h,
 			       DefaultDepth(xw.dpy, xw.scr));
 	XSetForeground(xw.dpy, dc.gc,
-		       dc.col[IS_SET(MODE_REVERSE) ? defaultfg :
-			      defaultbg].pixel);
+		       dc.
+		       col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg].
+		       pixel);
 	XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, xw.w, xw.h);
 
 	XftDrawChange(xw.draw, xw.buf);
@@ -2625,12 +2615,12 @@ static void cresize(int width, int height)
 	ttyresize();
 }
 
-static void resize(XEvent *e)
+static void resize(XEvent *ev)
 {
-	if (e->xconfigure.width == xw.w && e->xconfigure.height == xw.h)
+	if (ev->xconfigure.width == xw.w && ev->xconfigure.height == xw.h)
 		return;
 
-	cresize(e->xconfigure.width, e->xconfigure.height);
+	cresize(ev->xconfigure.width, ev->xconfigure.height);
 }
 
 /* Start of st */
@@ -2680,14 +2670,14 @@ static void tnew(int col, int row)
 	/* set screen size */
 	term.row = row;
 	term.col = col;
-	term.line = xmalloc(term.row * sizeof(Line));
-	term.alt = xmalloc(term.row * sizeof(Line));
+	term.line = xmalloc(term.row * sizeof(struct glyph *));
+	term.alt = xmalloc(term.row * sizeof(struct glyph *));
 	term.dirty = xmalloc(term.row * sizeof(*term.dirty));
 	term.tabs = xmalloc(term.col * sizeof(*term.tabs));
 
 	for (row = 0; row < term.row; row++) {
-		term.line[row] = xmalloc(term.col * sizeof(Glyph));
-		term.alt[row] = xmalloc(term.col * sizeof(Glyph));
+		term.line[row] = xmalloc(term.col * sizeof(struct glyph));
+		term.alt[row] = xmalloc(term.col * sizeof(struct glyph));
 		term.dirty[row] = 0;
 	}
 
@@ -2777,7 +2767,7 @@ static void xhints(void)
 	XFree(sizeh);
 }
 
-static int xloadfont(Font *f, FcPattern *pattern)
+static int xloadfont(struct st_font *f, FcPattern *pattern)
 {
 	FcPattern *match;
 	FcResult result;
@@ -2903,7 +2893,7 @@ static void xunloadfonts(void)
 	FcFontSetDestroy(dc.ibfont.set);
 }
 
-static void xzoom(const Arg *arg)
+static void xzoom(const union st_arg *arg)
 {
 	xunloadfonts();
 	xloadfonts(usedfont, usedfontsize + arg->i);
@@ -3065,26 +3055,26 @@ static void focus(XEvent *ev)
 	}
 }
 
-static void numlock(const Arg *dummy)
+static void numlock(const union st_arg * dummy)
 {
 	term.numlock ^= 1;
 }
 
-static void cmessage(XEvent *e)
+static void cmessage(XEvent *ev)
 {
 	/*
 	 * See xembed specs
 	 *  http://standards.freedesktop.org/xembed-spec/xembed-spec-latest.html
 	 */
-	if (e->xclient.message_type == xw.xembed
-	    && e->xclient.format == 32) {
-		if (e->xclient.data.l[1] == XEMBED_FOCUS_IN) {
+	if (ev->xclient.message_type == xw.xembed
+	    && ev->xclient.format == 32) {
+		if (ev->xclient.data.l[1] == XEMBED_FOCUS_IN) {
 			xw.state |= WIN_FOCUSED;
 			xseturgency(0);
-		} else if (e->xclient.data.l[1] == XEMBED_FOCUS_OUT) {
+		} else if (ev->xclient.data.l[1] == XEMBED_FOCUS_OUT) {
 			xw.state &= ~WIN_FOCUSED;
 		}
-	} else if (e->xclient.data.l[0] == xw.wmdeletewin) {
+	} else if (ev->xclient.data.l[0] == xw.wmdeletewin) {
 		/* Send SIGHUP to shell */
 		kill(pid, SIGHUP);
 		exit(EXIT_SUCCESS);
@@ -3162,7 +3152,7 @@ static void run(void)
 int main(int argc, char *argv[])
 {
 	int i, bitm, xr, yr;
-	uint wr, hr;
+	unsigned wr, hr;
 
 	xw.fw = xw.fh = xw.fx = xw.fy = 0;
 	xw.isfixed = False;
