@@ -191,8 +191,12 @@ struct st_term {
 	struct st_glyph	**line;	/* screen */
 	struct st_glyph	**alt;	/* alternate screen */
 	bool		*dirty;	/* dirtyness of lines */
+	bool		*tabs;
+
 	struct tcursor	c;	/* cursor */
 	struct tcursor	saved;
+	struct coord	oldcursor;
+	struct st_selection sel;
 	unsigned	top;	/* top    scroll limit */
 	unsigned	bot;	/* bottom scroll limit */
 
@@ -212,8 +216,8 @@ struct st_term {
 	unsigned	numlock:1;
 
 	int		esc;	/* escape state flags */
-	bool		*tabs;
-	struct st_selection sel;
+	struct csi_escape csiescseq;
+	struct str_escape strescseq;
 };
 
 /* Font structure */
@@ -293,6 +297,8 @@ struct st_window {
 	struct coord	winsize;
 	struct coord	fixedsize;	/* kill? */
 	struct coord	charsize;
+	struct coord	mousepos;
+	unsigned	mousebutton;
 	unsigned	visible:1;
 	unsigned	redraw:1;
 	unsigned	focused:1;
@@ -1003,17 +1009,16 @@ struct st_glyph *term_pos(struct st_term *term, struct coord pos)
 
 static void xdrawcursor(struct st_window *xw)
 {
-	static struct coord old;
 	int sl;
-	struct st_glyph g, *p, *oldp;
+	struct st_glyph g, *p, *old;
 
 	g.c[0] = ' ';
 	g.cmp = 0;
 	g.bg = defaultcs;
 	g.fg = defaultbg;
 
-	old.x = min(old.x, xw->term.size.x - 1);
-	old.y = min(old.y, xw->term.size.y - 1);
+	xw->term.oldcursor.x = min(xw->term.oldcursor.x, xw->term.size.x - 1);
+	xw->term.oldcursor.y = min(xw->term.oldcursor.y, xw->term.size.y - 1);
 
 	p = term_pos(&xw->term, xw->term.c.pos);
 
@@ -1021,12 +1026,14 @@ static void xdrawcursor(struct st_window *xw)
 		memcpy(g.c, p->c, UTF_SIZ);
 
 	/* remove the old cursor */
-	oldp = term_pos(&xw->term, old);
-	if (oldp->set) {
-		sl = utf8size(oldp->c);
-		xdraws(xw, oldp->c, *oldp, old, 1, sl);
+	old = term_pos(&xw->term, xw->term.oldcursor);
+	if (old->set) {
+		sl = utf8size(old->c);
+		xdraws(xw, old->c, *old, xw->term.oldcursor, 1, sl);
 	} else {
-		xtermclear(xw, old.x, old.y, old.x, old.y);
+		xtermclear(xw,
+			   xw->term.oldcursor.x, xw->term.oldcursor.y,
+			   xw->term.oldcursor.x, xw->term.oldcursor.y);
 	}
 
 	/* draw the new one */
@@ -1043,7 +1050,7 @@ static void xdrawcursor(struct st_window *xw)
 
 		sl = utf8size(g.c);
 		xdraws(xw, g.c, g, xw->term.c.pos, 1, sl);
-		old = xw->term.c.pos;
+		xw->term.oldcursor = xw->term.c.pos;
 	}
 }
 
@@ -1120,44 +1127,42 @@ static void redraw(struct st_window *xw, int timeout)
 
 /* Escape handling */
 
-static struct csi_escape csiescseq;
-
-static void csiparse(void)
+static void csiparse(struct csi_escape *csi)
 {
-	char *p = csiescseq.buf, *np;
+	char *p = csi->buf, *np;
 	long int v;
 
-	csiescseq.narg = 0;
+	csi->narg = 0;
 	if (*p == '?') {
-		csiescseq.priv = 1;
+		csi->priv = 1;
 		p++;
 	}
 
-	csiescseq.buf[csiescseq.len] = '\0';
-	while (p < csiescseq.buf + csiescseq.len) {
+	csi->buf[csi->len] = '\0';
+	while (p < csi->buf + csi->len) {
 		np = NULL;
 		v = strtol(p, &np, 10);
 		if (np == p)
 			v = 0;
 		if (v == LONG_MAX || v == LONG_MIN)
 			v = -1;
-		csiescseq.arg[csiescseq.narg++] = v;
+		csi->arg[csi->narg++] = v;
 		p = np;
-		if (*p != ';' || csiescseq.narg == ESC_ARG_SIZ)
+		if (*p != ';' || csi->narg == ESC_ARG_SIZ)
 			break;
 		p++;
 	}
-	csiescseq.mode = *p;
+	csi->mode = *p;
 }
 
-static void csidump(void)
+static void csidump(struct csi_escape *csi)
 {
 	int i;
 	unsigned c;
 
 	printf("ESC[");
-	for (i = 0; i < csiescseq.len; i++) {
-		c = csiescseq.buf[i] & 0xff;
+	for (i = 0; i < csi->len; i++) {
+		c = csi->buf[i] & 0xff;
 		if (isprint(c)) {
 			putchar(c);
 		} else if (c == '\n') {
@@ -1173,9 +1178,9 @@ static void csidump(void)
 	putchar('\n');
 }
 
-static void csireset(void)
+static void csireset(struct csi_escape *csi)
 {
-	memset(&csiescseq, 0, sizeof(csiescseq));
+	memset(csi, 0, sizeof(*csi));
 }
 
 /* t code */
@@ -1587,7 +1592,7 @@ static void tsetattr(struct st_term *term, int *attr, int l)
 			} else {
 				fprintf(stderr,
 					"erresc(default): gfx attr %d unknown\n",
-					attr[i]), csidump();
+					attr[i]), csidump(&term->csiescseq);
 			}
 			break;
 		}
@@ -1718,52 +1723,53 @@ static void tsetmode(struct st_window *xw,
 static void csihandle(struct st_window *xw)
 {
 	struct st_term *term = &xw->term;
+	struct csi_escape *csi = &term->csiescseq;
 
-	switch (csiescseq.mode) {
+	switch (csi->mode) {
 	default:
 	      unknown:
 		fprintf(stderr, "erresc: unknown csi ");
-		csidump();
+		csidump(csi);
 		/* die(""); */
 		break;
 	case '@':		/* ICH -- Insert <n> blank char */
-		DEFAULT(csiescseq.arg[0], 1);
-		tinsertblank(term, csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tinsertblank(term, csi->arg[0]);
 		break;
 	case 'A':		/* CUU -- Cursor <n> Up */
-		DEFAULT(csiescseq.arg[0], 1);
-		tmoverel(term, 0, -csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tmoverel(term, 0, -csi->arg[0]);
 		break;
 	case 'B':		/* CUD -- Cursor <n> Down */
 	case 'e':		/* VPR --Cursor <n> Down */
-		DEFAULT(csiescseq.arg[0], 1);
-		tmoverel(term, 0, csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tmoverel(term, 0, csi->arg[0]);
 		break;
 	case 'c':		/* DA -- Device Attributes */
-		if (csiescseq.arg[0] == 0)
+		if (csi->arg[0] == 0)
 			ttywrite(term, VT102ID, sizeof(VT102ID) - 1);
 		break;
 	case 'C':		/* CUF -- Cursor <n> Forward */
 	case 'a':		/* HPR -- Cursor <n> Forward */
-		DEFAULT(csiescseq.arg[0], 1);
-		tmoverel(term, csiescseq.arg[0], 0);
+		DEFAULT(csi->arg[0], 1);
+		tmoverel(term, csi->arg[0], 0);
 		break;
 	case 'D':		/* CUB -- Cursor <n> Backward */
-		DEFAULT(csiescseq.arg[0], 1);
-		tmoverel(term, -csiescseq.arg[0], 0);
+		DEFAULT(csi->arg[0], 1);
+		tmoverel(term, -csi->arg[0], 0);
 		break;
 	case 'E':		/* CNL -- Cursor <n> Down and first col */
-		DEFAULT(csiescseq.arg[0], 1);
-		tmoverel(term, 0, csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tmoverel(term, 0, csi->arg[0]);
 		term->c.pos.x = 0;
 		break;
 	case 'F':		/* CPL -- Cursor <n> Up and first col */
-		DEFAULT(csiescseq.arg[0], 1);
-		tmoverel(term, 0, -csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tmoverel(term, 0, -csi->arg[0]);
 		term->c.pos.x = 0;
 		break;
 	case 'g':		/* TBC -- Tabulation clear */
-		switch (csiescseq.arg[0]) {
+		switch (csi->arg[0]) {
 		case 0:	/* clear current tab stop */
 			term->tabs[term->c.pos.x] = 0;
 			break;
@@ -1777,24 +1783,24 @@ static void csihandle(struct st_window *xw)
 		break;
 	case 'G':		/* CHA -- Move to <col> */
 	case '`':		/* HPA */
-		DEFAULT(csiescseq.arg[0], 1);
-		tmovex(term, csiescseq.arg[0] - 1);
+		DEFAULT(csi->arg[0], 1);
+		tmovex(term, csi->arg[0] - 1);
 		break;
 	case 'H':		/* CUP -- Move to <row> <col> */
 	case 'f':		/* HVP */
-		DEFAULT(csiescseq.arg[0], 1);
-		DEFAULT(csiescseq.arg[1], 1);
+		DEFAULT(csi->arg[0], 1);
+		DEFAULT(csi->arg[1], 1);
 		tmoveato(term, (struct coord)
-			 {csiescseq.arg[1] - 1, csiescseq.arg[0] - 1});
+			 {csi->arg[1] - 1, csi->arg[0] - 1});
 		break;
 	case 'I':		/* CHT -- Cursor Forward Tabulation <n> tab stops */
-		DEFAULT(csiescseq.arg[0], 1);
-		while (csiescseq.arg[0]--)
+		DEFAULT(csi->arg[0], 1);
+		while (csi->arg[0]--)
 			tputtab(term, 1);
 		break;
 	case 'J':		/* ED -- Clear screen */
 		term->sel.bx = -1;
-		switch (csiescseq.arg[0]) {
+		switch (csi->arg[0]) {
 		case 0:	/* below */
 			__tclearregion(term, term->c.pos, term->size, 1);
 			if (term->c.pos.y < term->size.y - 1)
@@ -1816,7 +1822,7 @@ static void csihandle(struct st_window *xw)
 		}
 		break;
 	case 'K':		/* EL -- Clear line */
-		switch (csiescseq.arg[0]) {
+		switch (csi->arg[0]) {
 		case 0:	/* right */
 			tclearregion(term, term->c.pos, (struct coord)
 				     {term->size.x - 1, term->c.pos.y}, 1);
@@ -1833,56 +1839,56 @@ static void csihandle(struct st_window *xw)
 		}
 		break;
 	case 'S':		/* SU -- Scroll <n> line up */
-		DEFAULT(csiescseq.arg[0], 1);
-		tscrollup(term, term->top, csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tscrollup(term, term->top, csi->arg[0]);
 		break;
 	case 'T':		/* SD -- Scroll <n> line down */
-		DEFAULT(csiescseq.arg[0], 1);
-		tscrolldown(term, term->top, csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tscrolldown(term, term->top, csi->arg[0]);
 		break;
 	case 'L':		/* IL -- Insert <n> blank lines */
-		DEFAULT(csiescseq.arg[0], 1);
-		tinsertblankline(term, csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tinsertblankline(term, csi->arg[0]);
 		break;
 	case 'l':		/* RM -- Reset Mode */
-		tsetmode(xw, csiescseq.priv, 0, csiescseq.arg, csiescseq.narg);
+		tsetmode(xw, csi->priv, 0, csi->arg, csi->narg);
 		break;
 	case 'M':		/* DL -- Delete <n> lines */
-		DEFAULT(csiescseq.arg[0], 1);
-		tdeleteline(term, csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tdeleteline(term, csi->arg[0]);
 		break;
 	case 'X':		/* ECH -- Erase <n> char */
-		DEFAULT(csiescseq.arg[0], 1);
+		DEFAULT(csi->arg[0], 1);
 		tclearregion(term, term->c.pos, (struct coord)
-			     {term->c.pos.x + csiescseq.arg[0] - 1, term->c.pos.y}, 1);
+			     {term->c.pos.x + csi->arg[0] - 1, term->c.pos.y}, 1);
 		break;
 	case 'P':		/* DCH -- Delete <n> char */
-		DEFAULT(csiescseq.arg[0], 1);
-		tdeletechar(term, csiescseq.arg[0]);
+		DEFAULT(csi->arg[0], 1);
+		tdeletechar(term, csi->arg[0]);
 		break;
 	case 'Z':		/* CBT -- Cursor Backward Tabulation <n> tab stops */
-		DEFAULT(csiescseq.arg[0], 1);
-		while (csiescseq.arg[0]--)
+		DEFAULT(csi->arg[0], 1);
+		while (csi->arg[0]--)
 			tputtab(term, 0);
 		break;
 	case 'd':		/* VPA -- Move to <row> */
-		DEFAULT(csiescseq.arg[0], 1);
-		tmoveato(term, (struct coord) {term->c.pos.x, csiescseq.arg[0] - 1});
+		DEFAULT(csi->arg[0], 1);
+		tmoveato(term, (struct coord) {term->c.pos.x, csi->arg[0] - 1});
 		break;
 	case 'h':		/* SM -- Set terminal mode */
-		tsetmode(xw, csiescseq.priv, 1, csiescseq.arg, csiescseq.narg);
+		tsetmode(xw, csi->priv, 1, csi->arg, csi->narg);
 		break;
 	case 'm':		/* SGR -- Terminal attribute (color) */
-		tsetattr(term, csiescseq.arg, csiescseq.narg);
+		tsetattr(term, csi->arg, csi->narg);
 		break;
 	case 'r':		/* DECSTBM -- Set Scrolling Region */
-		if (csiescseq.priv) {
+		if (csi->priv) {
 			goto unknown;
 		} else {
-			DEFAULT(csiescseq.arg[0], 1);
-			DEFAULT(csiescseq.arg[1], term->size.y);
-			tsetscroll(term, csiescseq.arg[0] - 1,
-				   csiescseq.arg[1] - 1);
+			DEFAULT(csi->arg[0], 1);
+			DEFAULT(csi->arg[1], term->size.y);
+			tsetscroll(term, csi->arg[0] - 1,
+				   csi->arg[1] - 1);
 			tmoveato(term, ORIGIN);
 		}
 		break;
@@ -1897,26 +1903,24 @@ static void csihandle(struct st_window *xw)
 
 /* String escape handling */
 
-static struct str_escape strescseq;
-
-static void strparse(void)
+static void strparse(struct str_escape *esc)
 {
-	char *p = strescseq.buf;
+	char *p = esc->buf;
 
-	strescseq.narg = 0;
-	strescseq.buf[strescseq.len] = '\0';
-	while (p && strescseq.narg < STR_ARG_SIZ)
-		strescseq.args[strescseq.narg++] = strsep(&p, ";");
+	esc->narg = 0;
+	esc->buf[esc->len] = '\0';
+	while (p && esc->narg < STR_ARG_SIZ)
+		esc->args[esc->narg++] = strsep(&p, ";");
 }
 
-static void strdump(void)
+static void strdump(struct str_escape *esc)
 {
 	int i;
 	unsigned c;
 
-	printf("ESC%c", strescseq.type);
-	for (i = 0; i < strescseq.len; i++) {
-		c = strescseq.buf[i] & 0xff;
+	printf("ESC%c", esc->type);
+	for (i = 0; i < esc->len; i++) {
+		c = esc->buf[i] & 0xff;
 		if (c == '\0') {
 			return;
 		} else if (isprint(c)) {
@@ -1934,35 +1938,36 @@ static void strdump(void)
 	printf("ESC\\\n");
 }
 
-static void strreset(void)
+static void strreset(struct str_escape *esc)
 {
-	memset(&strescseq, 0, sizeof(strescseq));
+	memset(esc, 0, sizeof(*esc));
 }
 
 static void strhandle(struct st_window *xw)
 {
+	struct str_escape *esc = &xw->term.strescseq;
 	char *p = NULL;
 	int i, j, narg;
 
-	strparse();
-	narg = strescseq.narg;
+	strparse(esc);
+	narg = esc->narg;
 
-	switch (strescseq.type) {
+	switch (esc->type) {
 	case ']':		/* OSC -- Operating System Command */
-		switch (i = atoi(strescseq.args[0])) {
+		switch (i = atoi(esc->args[0])) {
 		case 0:
 		case 1:
 		case 2:
 			if (narg > 1)
-				xsettitle(xw, strescseq.args[1]);
+				xsettitle(xw, esc->args[1]);
 			break;
 		case 4:	/* color set */
 			if (narg < 3)
 				break;
-			p = strescseq.args[2];
+			p = esc->args[2];
 			/* fall through */
 		case 104:	/* color reset, here p = NULL */
-			j = (narg > 1) ? atoi(strescseq.args[1]) : -1;
+			j = (narg > 1) ? atoi(esc->args[1]) : -1;
 			if (!xsetcolorname(xw, j, p)) {
 				fprintf(stderr,
 					"erresc: invalid color %s\n", p);
@@ -1976,19 +1981,19 @@ static void strhandle(struct st_window *xw)
 			break;
 		default:
 			fprintf(stderr, "erresc: unknown str ");
-			strdump();
+			strdump(esc);
 			break;
 		}
 		break;
 	case 'k':		/* old title set compatibility */
-		xsettitle(xw, strescseq.args[0]);
+		xsettitle(xw, esc->args[0]);
 		break;
 	case 'P':		/* DSC -- Device Control String */
 	case '_':		/* APC -- Application Program Command */
 	case '^':		/* PM -- Privacy Message */
 	default:
 		fprintf(stderr, "erresc: unknown str ");
-		strdump();
+		strdump(esc);
 		/* die(""); */
 		break;
 	}
@@ -2026,11 +2031,11 @@ static void tputc(struct st_window *xw,
 			strhandle(xw);
 			break;
 		default:
-			if (strescseq.len + len <
-			    sizeof(strescseq.buf) - 1) {
-				memmove(&strescseq.buf[strescseq.len], c,
-					len);
-				strescseq.len += len;
+			if (term->strescseq.len + len <
+			    sizeof(term->strescseq.buf) - 1) {
+				memmove(&term->strescseq.buf[term->strescseq.len],
+					c, len);
+				term->strescseq.len += len;
 			} else {
 				/*
 				 * Here is a bug in terminals. If the user never sends
@@ -2077,7 +2082,7 @@ static void tputc(struct st_window *xw,
 				xseturgency(xw, 1);
 			return;
 		case '\033':	/* ESC */
-			csireset();
+			csireset(&term->csiescseq);
 			term->esc = ESC_START;
 			return;
 		case '\016':	/* SO */
@@ -2091,7 +2096,7 @@ static void tputc(struct st_window *xw,
 			return;
 		case '\032':	/* SUB */
 		case '\030':	/* CAN */
-			csireset();
+			csireset(&term->csiescseq);
 			return;
 		case '\005':	/* ENQ (IGNORED) */
 		case '\000':	/* NUL (IGNORED) */
@@ -2102,11 +2107,11 @@ static void tputc(struct st_window *xw,
 		}
 	} else if (term->esc & ESC_START) {
 		if (term->esc & ESC_CSI) {
-			csiescseq.buf[csiescseq.len++] = ascii;
+			term->csiescseq.buf[term->csiescseq.len++] = ascii;
 			if (BETWEEN(ascii, 0x40, 0x7E)
-			    || csiescseq.len >= sizeof(csiescseq.buf) - 1) {
+			    || term->csiescseq.len >= sizeof(term->csiescseq.buf) - 1) {
 				term->esc = 0;
-				csiparse();
+				csiparse(&term->csiescseq);
 				csihandle(xw);
 			}
 		} else if (term->esc & ESC_STR_END) {
@@ -2157,8 +2162,8 @@ static void tputc(struct st_window *xw,
 			case '^':	/* PM -- Privacy Message */
 			case ']':	/* OSC -- Operating System Command */
 			case 'k':	/* old title set compatibility */
-				strreset();
-				strescseq.type = ascii;
+				strreset(&term->strescseq);
+				term->strescseq.type = ascii;
 				term->esc |= ESC_STR;
 				break;
 			case '(':	/* set primary charset G0 */
@@ -2454,17 +2459,22 @@ static void getbuttoninfo(struct st_window *xw, XEvent *ev)
 
 static void mousereport(struct st_window *xw, XEvent *ev)
 {
-	int x = x2col(xw, ev->xbutton.x), y = y2row(xw, ev->xbutton.y),
-	    button = ev->xbutton.button, state = ev->xbutton.state, len;
+	int button = ev->xbutton.button, state = ev->xbutton.state, len;
 	char buf[40];
-	static int ob, ox, oy;
+	struct coord pos = {
+		x2col(xw, ev->xbutton.x),
+		y2row(xw, ev->xbutton.y)
+	};
 
 	/* from urxvt */
 	if (ev->xbutton.type == MotionNotify) {
-		if (!xw->term.mousemotion || (x == ox && y == oy))
+		if (!xw->term.mousemotion ||
+		    (pos.x == xw->mousepos.x &&
+		     pos.y == xw->mousepos.y))
 			return;
-		button = ob + 32;
-		ox = x, oy = y;
+
+		button = xw->mousebutton + 32;
+		xw->mousepos = pos;
 	} else if (!xw->term.mousesgr &&
 		   (ev->xbutton.type == ButtonRelease ||
 		    button == AnyButton)) {
@@ -2474,8 +2484,8 @@ static void mousereport(struct st_window *xw, XEvent *ev)
 		if (button >= 3)
 			button += 64 - 3;
 		if (ev->xbutton.type == ButtonPress) {
-			ob = button;
-			ox = x, oy = y;
+			xw->mousebutton = button;
+			xw->mousepos = pos;
 		}
 	}
 
@@ -2486,12 +2496,12 @@ static void mousereport(struct st_window *xw, XEvent *ev)
 	len = 0;
 	if (xw->term.mousesgr) {
 		len = snprintf(buf, sizeof(buf), "\033[<%d;%d;%d%c",
-			       button, x + 1, y + 1,
+			       button, pos.x + 1, pos.y + 1,
 			       ev->xbutton.type ==
 			       ButtonRelease ? 'm' : 'M');
-	} else if (x < 223 && y < 223) {
+	} else if (pos.x < 223 && pos.y < 223) {
 		len = snprintf(buf, sizeof(buf), "\033[M%c%c%c",
-			       32 + button, 32 + x + 1, 32 + y + 1);
+			       32 + button, 32 + pos.x + 1, 32 + pos.y + 1);
 	} else {
 		return;
 	}
@@ -3194,7 +3204,7 @@ static void run(struct st_window *xw)
 {
 	XEvent ev;
 	fd_set rfd;
-	int xfd = XConnectionNumber(xw->dpy), xev;
+	int xfd = XConnectionNumber(xw->dpy), xev = actionfps;
 	struct timeval drawtimeout, *tv = NULL, now, last;
 
 	void (*handler[LASTEvent]) (struct st_window *, XEvent *) = {
@@ -3215,7 +3225,7 @@ static void run(struct st_window *xw)
 
 	gettimeofday(&last, NULL);
 
-	for (xev = actionfps;;) {
+	while (1) {
 		FD_ZERO(&rfd);
 		FD_SET(xw->term.cmdfd, &rfd);
 		FD_SET(xfd, &rfd);
