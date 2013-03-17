@@ -27,6 +27,40 @@
 #include <X11/Xft/Xft.h>
 #include <fontconfig/fontconfig.h>
 
+/* From linux kernel */
+#define min(x, y) ({				\
+	typeof(x) _min1 = (x);			\
+	typeof(y) _min2 = (y);			\
+	(void) (&_min1 == &_min2);		\
+	_min1 < _min2 ? _min1 : _min2; })
+
+#define max(x, y) ({				\
+	typeof(x) _max1 = (x);			\
+	typeof(y) _max2 = (y);			\
+	(void) (&_max1 == &_max2);		\
+	_max1 > _max2 ? _max1 : _max2; })
+
+#define clamp(val, min, max) ({			\
+	typeof(val) __val = (val);		\
+	typeof(min) __min = (min);		\
+	typeof(max) __max = (max);		\
+	(void) (&__val == &__min);		\
+	(void) (&__val == &__max);		\
+	__val = __val < __min ? __min: __val;	\
+	__val > __max ? __max: __val; })
+
+#define clamp_t(type, val, min, max) ({		\
+	type __val = (val);			\
+	type __min = (min);			\
+	type __max = (max);			\
+	__val = __val < __min ? __min: __val;	\
+	__val > __max ? __max: __val; })
+
+#define swap(a, b) \
+	do { typeof(a) __tmp = (a); (a) = (b); (b) = __tmp; } while (0)
+
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+
 #if   defined(__linux)
 #include <pty.h>
 #elif defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
@@ -59,12 +93,8 @@
 
 /* macros */
 #define SERRNO strerror(errno)
-#define MIN(a, b)  ((a) < (b) ? (a) : (b))
-#define MAX(a, b)  ((a) < (b) ? (b) : (a))
-#define LEN(a)     (sizeof(a) / sizeof(a[0]))
 #define DEFAULT(a, b)     (a) = (a) ? (a) : (b)
 #define BETWEEN(x, a, b)  ((a) <= (x) && (x) <= (b))
-#define LIMIT(x, a, b)    (x) = (x) < (a) ? (a) : (x) > (b) ? (b) : (x)
 #define ATTRCMP(a, b) ((a).mode != (b).mode || (a).fg != (b).fg || (a).bg != (b).bg)
 #define IS_SET(flag) ((term.mode & (flag)) != 0)
 #define TIMEDIFF(t1, t2) ((t1.tv_sec-t2.tv_sec)*1000 + (t1.tv_usec-t2.tv_usec)/1000)
@@ -271,7 +301,7 @@ struct st_font {
 };
 
 struct drawing_context {
-	XftColor col[LEN(colorname) < 256 ? 256 : LEN(colorname)];
+	XftColor col[ARRAY_SIZE(colorname) < 256 ? 256 : ARRAY_SIZE(colorname)];
 	struct st_font font, bfont, ifont, ibfont;
 	GC gc;
 };
@@ -452,7 +482,7 @@ static int xsetcolorname(int x, const char *name)
 {
 	XRenderColor color = {.alpha = 0xffff };
 	XftColor colour;
-	if (x < 0 || x > LEN(colorname))
+	if (x < 0 || x > ARRAY_SIZE(colorname))
 		return -1;
 	if (!name) {
 		if (16 <= x && x < 16 + 216) {
@@ -534,8 +564,8 @@ static void tsetdirt(int top, int bot)
 {
 	int i;
 
-	LIMIT(top, 0, term.row - 1);
-	LIMIT(bot, 0, term.row - 1);
+	bot = min(bot, term.row - 1);
+	top = min(top, term.row - 1);
 
 	for (i = top; i <= bot; i++)
 		term.dirty[i] = 1;
@@ -553,8 +583,8 @@ static bool selected(int x, int y)
 	int bx, ex;
 
 	if (sel.ey == y && sel.by == y) {
-		bx = MIN(sel.bx, sel.ex);
-		ex = MAX(sel.bx, sel.ex);
+		bx = min(sel.bx, sel.ex);
+		ex = max(sel.bx, sel.ex);
 		return BETWEEN(x, bx, ex);
 	}
 
@@ -769,7 +799,7 @@ static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int by
 	FcFontSet *fcsets[] = { NULL };
 	FcCharSet *fccharset;
 	XftColor *fg = &dc.col[base.fg], *bg = &dc.col[base.bg],
-	    *temp, revfg, revbg;
+	    revfg, revbg;
 	XRenderColor colfg, colbg;
 
 	frcflags = FRC_NORMAL;
@@ -830,11 +860,8 @@ static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int by
 		}
 	}
 
-	if (base.mode & ATTR_REVERSE) {
-		temp = fg;
-		fg = bg;
-		bg = temp;
-	}
+	if (base.mode & ATTR_REVERSE)
+		swap(bg, fg);
 
 	/* Intelligent cleaning up of the borders. */
 	if (x == 0) {
@@ -903,7 +930,7 @@ static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int by
 		/* Search the font cache. */
 		for (i = 0; i < frclen; i++, frp--) {
 			if (frp <= 0)
-				frp = LEN(frc) - 1;
+				frp = ARRAY_SIZE(frc) - 1;
 
 			if (frc[frp].c == u8char
 			    && frc[frp].flags == frcflags) {
@@ -939,10 +966,10 @@ static void xdraws(char *s, struct glyph base, int x, int y, int charlen, int by
 			 */
 			frccur++;
 			frclen++;
-			if (frccur >= LEN(frc))
+			if (frccur >= ARRAY_SIZE(frc))
 				frccur = 0;
-			if (frclen > LEN(frc)) {
-				frclen = LEN(frc);
+			if (frclen > ARRAY_SIZE(frc)) {
+				frclen = ARRAY_SIZE(frc);
 				XftFontClose(xw.dpy, frc[frccur].font);
 			}
 
@@ -981,8 +1008,8 @@ static void xdrawcursor(void)
 	int sl;
 	struct glyph g = { {' '}, ATTR_NULL, defaultbg, defaultcs, 0 };
 
-	LIMIT(oldx, 0, term.col - 1);
-	LIMIT(oldy, 0, term.row - 1);
+	oldx = min(oldx, term.col - 1);
+	oldy = min(oldy, term.row - 1);
 
 	if (term.line[term.c.y][term.c.x].state & GLYPH_SET)
 		memcpy(g.c, term.line[term.c.y][term.c.x].c, UTF_SIZ);
@@ -1144,17 +1171,17 @@ static void csireset(void)
 
 static void tclearregion(int x1, int y1, int x2, int y2, int bce)
 {
-	int x, y, temp;
+	int x, y;
 
 	if (x1 > x2)
-		temp = x1, x1 = x2, x2 = temp;
+		swap(x1, x2);
 	if (y1 > y2)
-		temp = y1, y1 = y2, y2 = temp;
+		swap(y1, y2);
 
-	LIMIT(x1, 0, term.col - 1);
-	LIMIT(x2, 0, term.col - 1);
-	LIMIT(y1, 0, term.row - 1);
-	LIMIT(y2, 0, term.row - 1);
+	x1 = min(x1, term.col - 1);
+	x2 = min(x2, term.col - 1);
+	y1 = min(y1, term.row - 1);
+	y2 = min(y2, term.row - 1);
 
 	for (y = y1; y <= y2; y++) {
 		term.dirty[y] = 1;
@@ -1173,16 +1200,13 @@ static void tclearregion(int x1, int y1, int x2, int y2, int bce)
 static void tscrolldown(int orig, int n)
 {
 	int i;
-	struct glyph *temp;
 
-	LIMIT(n, 0, term.bot - orig + 1);
+	n = clamp(n, 0, term.bot - orig + 1);
 
 	tclearregion(0, term.bot - n + 1, term.col - 1, term.bot, 0);
 
 	for (i = term.bot; i >= orig + n; i--) {
-		temp = term.line[i];
-		term.line[i] = term.line[i - n];
-		term.line[i - n] = temp;
+		swap(term.line[i], term.line[i - n]);
 
 		term.dirty[i] = 1;
 		term.dirty[i - n] = 1;
@@ -1194,15 +1218,13 @@ static void tscrolldown(int orig, int n)
 static void tscrollup(int orig, int n)
 {
 	int i;
-	struct glyph *temp;
-	LIMIT(n, 0, term.bot - orig + 1);
+
+	n = clamp(n, 0, term.bot - orig + 1);
 
 	tclearregion(0, orig, term.col - 1, orig + n - 1, 0);
 
 	for (i = orig; i <= term.bot - n; i++) {
-		temp = term.line[i];
-		term.line[i] = term.line[i + n];
-		term.line[i + n] = temp;
+		swap(term.line[i], term.line[i + n]);
 
 		term.dirty[i] = 1;
 		term.dirty[i + n] = 1;
@@ -1213,17 +1235,11 @@ static void tscrollup(int orig, int n)
 
 static void tmoveto(int x, int y)
 {
-	int miny, maxy;
+	x = min(x, term.col - 1);
+	y = term.c.state & CURSOR_ORIGIN
+		? clamp(y, term.top, term.bot)
+		: min(y, term.row - 1);
 
-	if (term.c.state & CURSOR_ORIGIN) {
-		miny = term.top;
-		maxy = term.bot;
-	} else {
-		miny = 0;
-		maxy = term.row - 1;
-	}
-	LIMIT(x, 0, term.col - 1);
-	LIMIT(y, miny, maxy);
 	term.c.state &= ~CURSOR_WRAPNEXT;
 	term.c.x = x;
 	term.c.y = y;
@@ -1484,25 +1500,19 @@ static void tsetattr(int *attr, int l)
 
 static void tsetscroll(int t, int b)
 {
-	int temp;
+	t = min(t, term.row - 1);
+	b = min(b, term.row - 1);
 
-	LIMIT(t, 0, term.row - 1);
-	LIMIT(b, 0, term.row - 1);
-	if (t > b) {
-		temp = t;
-		t = b;
-		b = temp;
-	}
+	if (t > b)
+		swap(t, b);
+
 	term.top = t;
 	term.bot = b;
 }
 
 static void tswapscreen(void)
 {
-	struct glyph **tmp = term.line;
-
-	term.line = term.alt;
-	term.alt = tmp;
+	swap(term.line, term.alt);
 	term.mode ^= MODE_ALTSCREEN;
 	tfulldirt();
 }
@@ -2173,16 +2183,16 @@ static char *kmap(KeySym k, unsigned state)
 	int i;
 
 	/* Check for mapped keys out of X11 function keys. */
-	for (i = 0; i < LEN(mappedkeys); i++) {
+	for (i = 0; i < ARRAY_SIZE(mappedkeys); i++) {
 		if (mappedkeys[i] == k)
 			break;
 	}
-	if (i == LEN(mappedkeys)) {
+	if (i == ARRAY_SIZE(mappedkeys)) {
 		if ((k & 0xFFFF) < 0xFD00)
 			return NULL;
 	}
 
-	for (kp = key; kp < key + LEN(key); kp++) {
+	for (kp = key; kp < key + ARRAY_SIZE(key); kp++) {
 		mask = kp->mask;
 
 		if (kp->k != k)
@@ -2232,7 +2242,7 @@ static void kpress(XEvent *ev)
 	    XmbLookupString(xw.xic, e, xstr, sizeof(xstr), &ksym, &status);
 	e->state &= ~Mod2Mask;
 	/* 1. shortcuts */
-	for (bp = shortcuts; bp < shortcuts + LEN(shortcuts); bp++) {
+	for (bp = shortcuts; bp < shortcuts + ARRAY_SIZE(shortcuts); bp++) {
 		if (ksym == bp->keysym && match(bp->mod, e->state)) {
 			bp->func(&(bp->arg));
 			return;
@@ -2268,7 +2278,7 @@ static void ttyread(void)
 	int ret;
 
 	/* append read bytes to unprocessed bytes */
-	if ((ret = read(cmdfd, buf + buflen, LEN(buf) - buflen)) < 0)
+	if ((ret = read(cmdfd, buf + buflen, sizeof(buf) - buflen)) < 0)
 		die("Couldn't read from shell: %s\n", SERRNO);
 
 	/* process every complete utf8 char */
@@ -2302,7 +2312,7 @@ static int x2col(int x)
 	x -= borderpx;
 	x /= xw.cw;
 
-	return LIMIT(x, 0, term.col - 1);
+	return min(x, term.col - 1);
 }
 
 static int y2row(int y)
@@ -2310,7 +2320,7 @@ static int y2row(int y)
 	y -= borderpx;
 	y /= xw.ch;
 
-	return LIMIT(y, 0, term.row - 1);
+	return min(y, term.row - 1);
 }
 
 static void getbuttoninfo(XEvent *e)
@@ -2324,12 +2334,12 @@ static void getbuttoninfo(XEvent *e)
 	sel.ey = y2row(e->xbutton.y);
 
 	sel.b.x = sel.by < sel.ey ? sel.bx : sel.ex;
-	sel.b.y = MIN(sel.by, sel.ey);
+	sel.b.y = min(sel.by, sel.ey);
 	sel.e.x = sel.by < sel.ey ? sel.ex : sel.bx;
-	sel.e.y = MAX(sel.by, sel.ey);
+	sel.e.y = max(sel.by, sel.ey);
 
 	sel.type = SEL_REGULAR;
-	for (type = 1; type < LEN(selmasks); ++type) {
+	for (type = 1; type < ARRAY_SIZE(selmasks); ++type) {
 		if (match(selmasks[type], state)) {
 			sel.type = type;
 			break;
@@ -2485,9 +2495,8 @@ static void bmotion(XEvent *e)
 	oldsey = sel.e.y;
 	getbuttoninfo(e);
 
-	if (oldey != sel.ey || oldex != sel.ex) {
-		tsetdirt(MIN(sel.b.y, oldsby), MAX(sel.e.y, oldsey));
-	}
+	if (oldey != sel.ey || oldex != sel.ex)
+		tsetdirt(min(sel.b.y, oldsby), max(sel.e.y, oldsey));
 }
 
 /* Resizing code */
@@ -2507,8 +2516,8 @@ static void ttyresize(void)
 static int tresize(int col, int row)
 {
 	int i, x;
-	int minrow = MIN(row, term.row);
-	int mincol = MIN(col, term.col);
+	int minrow = min(row, term.row);
+	int mincol = min(col, term.col);
 	int slide = term.c.y - row + 1;
 	bool *bp;
 
@@ -2583,8 +2592,8 @@ static int tresize(int col, int row)
 
 static void xresize(int col, int row)
 {
-	xw.tw = MAX(1, col * xw.cw);
-	xw.th = MAX(1, row * xw.ch);
+	xw.tw = max(1, col * xw.cw);
+	xw.th = max(1, row * xw.ch);
 
 	XFreePixmap(xw.dpy, xw.buf);
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, xw.w, xw.h,
@@ -2704,8 +2713,8 @@ static void xloadcols(void)
 	int i, r, g, b;
 	XRenderColor color = {.alpha = 0xffff };
 
-	/* load colors [0-15] colors and [256-LEN(colorname)[ (config.h) */
-	for (i = 0; i < LEN(colorname); i++) {
+	/* load colors [0-15] colors and [256-ARRAY_SIZE(colorname)[ (config.h) */
+	for (i = 0; i < ARRAY_SIZE(colorname); i++) {
 		if (!colorname[i])
 			continue;
 		if (!XftColorAllocName
@@ -2873,7 +2882,7 @@ static void xunloadfonts(void)
 	 */
 	for (i = 0, ip = frccur; i < frclen; i++, ip--) {
 		if (ip < 0)
-			ip = LEN(frc) - 1;
+			ip = ARRAY_SIZE(frc) - 1;
 		XftFontClose(xw.dpy, frc[ip].font);
 	}
 	frccur = -1;
@@ -3110,7 +3119,7 @@ static void run(void)
 		FD_ZERO(&rfd);
 		FD_SET(cmdfd, &rfd);
 		FD_SET(xfd, &rfd);
-		if (select(MAX(xfd, cmdfd) + 1, &rfd, NULL, NULL, tv) < 0) {
+		if (select(max(xfd, cmdfd) + 1, &rfd, NULL, NULL, tv) < 0) {
 			if (errno == EINTR)
 				continue;
 			die("select failed: %s\n", SERRNO);
