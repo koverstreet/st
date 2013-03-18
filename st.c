@@ -575,52 +575,49 @@ static void xdrawcursor(struct st_window *xw)
 	}
 }
 
-static void drawregion(struct st_window *xw,
-		       int x1, int y1, int x2, int y2)
+static struct st_glyph sel_glyph(struct st_window *xw, unsigned x, unsigned y)
 {
-	int ic, ib, x, y, ox;
-	struct st_glyph base, new;
-	bool ena_sel = xw->term.sel.bx != -1;
+	struct st_glyph ret = xw->term.line[y][x];
 
-	if (xw->term.sel.alt != xw->term.altscreen)
-		ena_sel = 0;
+	if (xw->term.sel.bx != -1 &&
+	    xw->term.sel.alt == xw->term.altscreen &&
+	    term_selected(&xw->term.sel, x, y))
+		ret.reverse ^= 1;
 
-	if (!xw->visible)
-		return;
-
-	for (y = y1; y < y2; y++) {
-		if (!xw->term.dirty[y])
-			continue;
-
-		xw->term.dirty[y] = 0;
-		base = xw->term.line[y][0];
-		ic = ib = ox = 0;
-		for (x = x1; x < x2; x++) {
-			new = xw->term.line[y][x];
-			if (ena_sel && new.c && term_selected(&xw->term.sel, x, y))
-				new.reverse ^= 1;
-			if (ic > 0 && new.cmp != base.cmp) {
-				xdraw_glyphs(xw, (struct coord) {ox, y},
-					     base, &xw->term.line[y][ox], ic);
-				ic = 0;
-			}
-			if (ic == 0) {
-				ox = x;
-				base = new;
-			}
-
-			++ic;
-		}
-		if (ic > 0)
-			xdraw_glyphs(xw, (struct coord) {ox, y},
-				     base, &xw->term.line[y][ox], ic);
-	}
-	xdrawcursor(xw);
+	return ret;
 }
 
 static void draw(struct st_window *xw)
 {
-	drawregion(xw, 0, 0, xw->term.size.x, xw->term.size.y);
+	struct coord pos;
+
+	if (!xw->visible)
+		return;
+
+	for (pos.y = 0; pos.y < xw->term.size.y; pos.y++) {
+		if (!xw->term.dirty[pos.y])
+			continue;
+
+		xw->term.dirty[pos.y] = 0;
+
+		pos.x = 0;
+
+		while (pos.x < xw->term.size.x) {
+			unsigned x2 = pos.x + 1;
+			struct st_glyph base = sel_glyph(xw, pos.x, pos.y);
+
+			while (x2 < xw->term.size.x &&
+			       base.cmp == sel_glyph(xw, x2, pos.y).cmp)
+				x2++;
+
+			xdraw_glyphs(xw, pos, base,
+				     term_pos(&xw->term, pos), x2 - pos.x);
+			pos.x = x2;
+		}
+	}
+
+	xdrawcursor(xw);
+
 	XCopyArea(xw->dpy, xw->buf, xw->win, xw->gc,
 		  0, 0, xw->winsize.x, xw->winsize.y, 0, 0);
 	XSetForeground(xw->dpy, xw->gc,
