@@ -190,27 +190,31 @@ static void csireset(struct csi_escape *csi)
 
 /* t code */
 
-static void __tclearregion(struct st_term *term, struct coord p1,
-			 struct coord p2, int bce)
+static void __tclearline(struct st_term *term, unsigned y,
+		       unsigned start, unsigned end, int bce)
 {
-	struct coord p;
+	struct st_glyph *g;
 
-	for (p.y = p1.y; p.y < p2.y; p.y++) {
-		term->dirty[p.y] = 1;
+	term->dirty[y] = 1;
 
-		for (p.x = p1.x; p.x < p2.x; p.x++) {
-			struct st_glyph *g = term_pos(term, p);
+	for (g = &term->line[y][start];
+	     g < &term->line[y][end];
+	     g++) {
+		g->set = bce;
 
-			g->set = bce;
+		if (g->set) {
+			*g = term->c.attr;
 
-			if (g->set) {
-				*g = term->c.attr;
-
-				g->c = ' ';
-				g->set = 1;
-			}
+			g->c = ' ';
+			g->set = 1;
 		}
 	}
+}
+
+static void tclearline(struct st_term *term,
+		       unsigned start, unsigned end, int bce)
+{
+	__tclearline(term, term->c.pos.y, start, end, bce);
 }
 
 static void tclearregion(struct st_term *term, struct coord p1,
@@ -218,32 +222,8 @@ static void tclearregion(struct st_term *term, struct coord p1,
 {
 	struct coord p;
 
-	if (p1.x > p2.x)
-		swap(p1.x, p2.x);
-	if (p1.y > p2.y)
-		swap(p1.y, p2.y);
-
-	p1.x = min(p1.x, term->size.x - 1);
-	p2.x = min(p2.x, term->size.x - 1);
-	p1.y = min(p1.y, term->size.y - 1);
-	p2.y = min(p2.y, term->size.y - 1);
-
-	for (p.y = p1.y; p.y <= p2.y; p.y++) {
-		term->dirty[p.y] = 1;
-
-		for (p.x = p1.x; p.x <= p2.x; p.x++) {
-			struct st_glyph *g = term_pos(term, p);
-
-			g->set = bce;
-
-			if (g->set) {
-				*g = term->c.attr;
-
-				g->c = ' ';
-				g->set = 1;
-			}
-		}
-	}
+	for (p.y = p1.y; p.y < p2.y; p.y++)
+		__tclearline(term, p.y, p1.x, p2.x, bce);
 }
 
 static void tscrolldown(struct st_term *term, int orig, int n)
@@ -254,7 +234,7 @@ static void tscrolldown(struct st_term *term, int orig, int n)
 
 	tclearregion(term,
 		     (struct coord) {0, term->bot - n + 1},
-		     (struct coord) {term->size.x - 1, term->bot}, 0);
+		     (struct coord) {term->size.x, term->bot + 1}, 0);
 
 	for (i = term->bot; i >= orig + n; i--) {
 		swap(term->line[i], term->line[i - n]);
@@ -274,7 +254,7 @@ static void tscrollup(struct st_term *term, int orig, int n)
 
 	tclearregion(term,
 		     (struct coord) {0, orig},
-		     (struct coord) {term->size.x - 1, orig + n - 1}, 0);
+		     (struct coord) {term->size.x, orig + n}, 0);
 
 	/* XXX: optimize? */
 	for (i = orig; i <= term->bot - n; i++) {
@@ -365,7 +345,7 @@ static void treset(struct st_term *term)
 	term->appcursor	= 0;
 	term->mousesgr	= 0;
 
-	__tclearregion(term, ORIGIN, term->size, 0);
+	tclearregion(term, ORIGIN, term->size, 0);
 	tmoveto(term, ORIGIN);
 	tcursor_save(term);
 }
@@ -437,46 +417,40 @@ static void tsetchar(struct st_term *term, unsigned c, struct coord pos)
 
 static void tdeletechar(struct st_term *term, int n)
 {
-	unsigned size;
-	struct coord src = term->c.pos, dst = term->c.pos;
-	struct coord start = term->c.pos, end = term->c.pos;
+	struct coord src = term->c.pos;
+	unsigned size, start = term->c.pos.x;
 
 	src.x += n;
 	size = term->size.x - src.x;
 
-	end.x = term->size.x - 1;
-
 	if (src.x < term->size.x) {
-		memmove(term_pos(term, dst),
+		memmove(term_pos(term, term->c.pos),
 			term_pos(term, src),
 			size * sizeof(struct st_glyph));
 
-		start.x = term->size.x - n;
+		start = term->size.x - n;
 	}
 
-	tclearregion(term, start, end, 0);
+	tclearline(term, start, term->size.x, 0);
 }
 
 static void tinsertblank(struct st_term *term, int n)
 {
-	unsigned size;
-	struct coord src = term->c.pos, dst = term->c.pos;
-	struct coord start = term->c.pos, end = term->c.pos;
+	struct coord dst = term->c.pos;
+	unsigned size, end = term->size.x;
 
 	dst.x += n;
 	size = term->size.x - dst.x;
 
-	end.x = term->size.x - 1;
-
 	if (dst.x < term->size.x) {
 		memmove(term_pos(term, dst),
-			term_pos(term, src),
+			term_pos(term, term->c.pos),
 			size * sizeof(struct st_glyph));
 
-		end.x = dst.x - 1;
+		end = dst.x;
 	}
 
-	tclearregion(term, start, end, 0);
+	tclearline(term, term->c.pos.x, end, 0);
 }
 
 static void tinsertblankline(struct st_term *term, int n)
@@ -674,8 +648,8 @@ static void tsetmode(struct st_term *term, bool priv,
 			case 47:
 			case 1047:{
 					if (term->altscreen)
-						__tclearregion(term, ORIGIN,
-							       term->size, 0);
+						tclearregion(term, ORIGIN,
+							     term->size, 0);
 					if (set != term->altscreen)
 						tswapscreen(term);
 					if (*args != 1049)
@@ -802,20 +776,19 @@ static void csihandle(struct st_term *term)
 		term->sel.bx = -1;
 		switch (csi->arg[0]) {
 		case 0:	/* below */
-			__tclearregion(term, term->c.pos, term->size, 1);
+			tclearregion(term, term->c.pos, term->size, 1);
 			if (term->c.pos.y < term->size.y - 1)
-				__tclearregion(term, (struct coord)
-					       {0, term->c.pos.y + 1},
-					       term->size, 1);
+				tclearregion(term, (struct coord)
+					     {0, term->c.pos.y + 1},
+					     term->size, 1);
 			break;
 		case 1:	/* above */
 			if (term->c.pos.y > 1)
-				__tclearregion(term, ORIGIN, term->size, 1);
-			tclearregion(term, (struct coord) {0, term->c.pos.y},
-				     term->c.pos, 1);
+				tclearregion(term, ORIGIN, term->size, 1);
+			tclearline(term, 0, term->c.pos.x + 1, 1);
 			break;
 		case 2:	/* all */
-			__tclearregion(term, ORIGIN, term->size, 1);
+			tclearregion(term, ORIGIN, term->size, 1);
 			break;
 		default:
 			goto unknown;
@@ -824,17 +797,13 @@ static void csihandle(struct st_term *term)
 	case 'K':		/* EL -- Clear line */
 		switch (csi->arg[0]) {
 		case 0:	/* right */
-			tclearregion(term, term->c.pos, (struct coord)
-				     {term->size.x - 1, term->c.pos.y}, 1);
+			tclearline(term, term->c.pos.x, term->size.x, 1);
 			break;
 		case 1:	/* left */
-			tclearregion(term, (struct coord)
-				     {0, term->c.pos.y}, term->c.pos, 1);
+			tclearline(term, 0, term->c.pos.x + 1, 1);
 			break;
 		case 2:	/* all */
-			tclearregion(term, (struct coord) {0, term->c.pos.y},
-				     (struct coord)
-				     {term->size.x - 1, term->c.pos.y}, 1);
+			tclearline(term, 0, term->size.x, 1);
 			break;
 		}
 		break;
@@ -859,8 +828,7 @@ static void csihandle(struct st_term *term)
 		break;
 	case 'X':		/* ECH -- Erase <n> char */
 		DEFAULT(csi->arg[0], 1);
-		tclearregion(term, term->c.pos, (struct coord)
-			     {term->c.pos.x + csi->arg[0] - 1, term->c.pos.y}, 1);
+		tclearline(term, term->c.pos.x, term->c.pos.x + csi->arg[0], 1);
 		break;
 	case 'P':		/* DCH -- Delete <n> char */
 		DEFAULT(csi->arg[0], 1);
