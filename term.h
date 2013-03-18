@@ -160,7 +160,6 @@ struct st_term {
 
 	struct tcursor	c;	/* cursor */
 	struct tcursor	saved;
-	struct coord	oldcursor;
 	struct st_selection sel;
 	unsigned	top;	/* top    scroll limit */
 	unsigned	bot;	/* bottom scroll limit */

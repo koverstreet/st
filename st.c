@@ -536,40 +536,24 @@ retry:
 
 static void xdrawcursor(struct st_window *xw)
 {
-	struct st_glyph g, *p;
+	struct st_glyph g;
 
-	g.c = ' ';
+	if (xw->term.hide)
+		return;
+
+	g.c = term_pos(&xw->term, xw->term.c.pos)->c;
 	g.cmp = 0;
-	g.bg = defaultcs;
 	g.fg = defaultbg;
+	g.bg = xw->focused ? defaultcs : defaultucs;
 
-	xw->term.oldcursor.x = min(xw->term.oldcursor.x, xw->term.size.x - 1);
-	xw->term.oldcursor.y = min(xw->term.oldcursor.y, xw->term.size.y - 1);
-
-	p = term_pos(&xw->term, xw->term.c.pos);
-
-	g.c = p->c;
-
-	/* remove the old cursor */
-	xdraw_glyphs(xw, xw->term.oldcursor,
-		     *term_pos(&xw->term, xw->term.oldcursor),
-		     term_pos(&xw->term, xw->term.oldcursor), 1);
-
-	/* draw the new one */
-	if (!xw->term.hide) {
-		if (!xw->focused)
-			g.bg = defaultucs;
-
-		g.reverse = xw->term.reverse;
-		if (g.reverse) {
-			unsigned t = g.fg;
-			g.fg = g.bg;
-			g.bg = t;
-		}
-
-		xdraw_glyphs(xw, xw->term.c.pos, g, &g, 1);
-		xw->term.oldcursor = xw->term.c.pos;
+	g.reverse = xw->term.reverse;
+	if (g.reverse) {
+		unsigned t = g.fg;
+		g.fg = g.bg;
+		g.bg = t;
 	}
+
+	xdraw_glyphs(xw, xw->term.c.pos, g, &g, 1);
 }
 
 static struct st_glyph sel_glyph(struct st_window *xw, unsigned x, unsigned y)

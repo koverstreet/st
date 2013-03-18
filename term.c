@@ -307,6 +307,8 @@ static void tmovex(struct st_term *term, unsigned x)
 
 static void tmovey(struct st_term *term, unsigned y)
 {
+	term->dirty[term->c.pos.y] = 1;
+
 	term->c.wrapnext = 0;
 	term->c.pos.y = term->c.origin
 		? clamp(y, term->top, term->bot)
@@ -330,6 +332,8 @@ static void tmoveato(struct st_term *term, struct coord pos)
 
 static void tmoverel(struct st_term *term, int x, int y)
 {
+	term->dirty[term->c.pos.y] = 1;
+
 	term->c.pos.x = clamp_t(int, term->c.pos.x + x, 0, term->size.x - 1);
 	term->c.pos.y = clamp_t(int, term->c.pos.y + y, 0, term->size.y - 1);
 
