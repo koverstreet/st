@@ -123,8 +123,13 @@ struct st_window {
 	struct coord	winsize;
 	struct coord	fixedsize;	/* kill? */
 	struct coord	charsize;
+
 	struct coord	mousepos;
 	unsigned	mousebutton;
+	struct timeval	mousedown;
+	struct timeval	mouseup[3];
+
+	unsigned	mousemotion:1;
 	unsigned	visible:1;
 	unsigned	focused:1;
 };
@@ -269,12 +274,7 @@ static void clippaste(struct st_window *xw, const union st_arg *dummy)
 
 static void selclear(struct st_window *xw, XEvent *e)
 {
-	struct st_selection *sel = &xw->term.sel;
-
-	if (sel->bx == -1)
-		return;
-	sel->bx = -1;
-	tsetdirt(&xw->term, sel->b.y, sel->e.y);
+	term_sel_start(&xw->term, SEL_NONE, ORIGIN);
 }
 
 static void selrequest(struct st_window *xw, XEvent *e)
@@ -576,9 +576,7 @@ static struct st_glyph sel_glyph(struct st_window *xw, unsigned x, unsigned y)
 {
 	struct st_glyph ret = xw->term.line[y][x];
 
-	if (xw->term.sel.bx != -1 &&
-	    xw->term.sel.alt == xw->term.altscreen &&
-	    term_selected(&xw->term.sel, x, y))
+	if (term_selected(&xw->term.sel, x, y))
 		ret.reverse ^= 1;
 
 	return ret;
@@ -717,55 +715,21 @@ static void kpress(struct st_window *xw, XEvent *ev)
 
 /* Mouse code */
 
-static int x2col(struct st_window *xw, unsigned x)
+static struct coord mouse_pos(struct st_window *xw, XEvent *ev)
 {
-	x -= borderpx;
-	x /= xw->charsize.x;
-
-	return min(x, xw->term.size.x - 1);
-}
-
-static int y2row(struct st_window *xw, unsigned y)
-{
-	y -= borderpx;
-	y /= xw->charsize.y;
-
-	return min(y, xw->term.size.y - 1);
-}
-
-static void getbuttoninfo(struct st_window *xw, XEvent *ev)
-{
-	int type;
-	unsigned state = ev->xbutton.state & ~Button1Mask;
-	struct st_selection *sel = &xw->term.sel;
-
-	sel->alt = xw->term.altscreen;
-
-	sel->ex = x2col(xw, ev->xbutton.x);
-	sel->ey = y2row(xw, ev->xbutton.y);
-
-	sel->b.x = sel->by < sel->ey ? sel->bx : sel->ex;
-	sel->b.y = min(sel->by, sel->ey);
-	sel->e.x = sel->by < sel->ey ? sel->ex : sel->bx;
-	sel->e.y = max(sel->by, sel->ey);
-
-	sel->type = SEL_REGULAR;
-	for (type = 1; type < ARRAY_SIZE(selmasks); ++type) {
-		if (match(selmasks[type], state)) {
-			sel->type = type;
-			break;
-		}
-	}
+	return (struct coord) {
+		.x = min((ev->xbutton.x - borderpx) / xw->charsize.x,
+			 xw->term.size.x - 1),
+		.y = min((ev->xbutton.y - borderpx) / xw->charsize.y,
+			 xw->term.size.y - 1),
+	};
 }
 
 static void mousereport(struct st_window *xw, XEvent *ev)
 {
-	int button = ev->xbutton.button, state = ev->xbutton.state, len;
 	char buf[40];
-	struct coord pos = {
-		x2col(xw, ev->xbutton.x),
-		y2row(xw, ev->xbutton.y)
-	};
+	int button = ev->xbutton.button, state = ev->xbutton.state, len;
+	struct coord pos = mouse_pos(xw, ev);
 
 	/* from urxvt */
 	if (ev->xbutton.type == MotionNotify) {
@@ -790,22 +754,20 @@ static void mousereport(struct st_window *xw, XEvent *ev)
 		}
 	}
 
-	button += (state & ShiftMask ? 4 : 0)
-	    + (state & Mod4Mask ? 8 : 0)
-	    + (state & ControlMask ? 16 : 0);
+	button += (state & ShiftMask ? 4 : 0) +
+		(state & Mod4Mask ? 8 : 0) +
+		(state & ControlMask ? 16 : 0);
 
-	len = 0;
-	if (xw->term.mousesgr) {
+	if (xw->term.mousesgr)
 		len = snprintf(buf, sizeof(buf), "\033[<%d;%d;%d%c",
 			       button, pos.x + 1, pos.y + 1,
 			       ev->xbutton.type ==
 			       ButtonRelease ? 'm' : 'M');
-	} else if (pos.x < 223 && pos.y < 223) {
+	else if (pos.x < 223 && pos.y < 223)
 		len = snprintf(buf, sizeof(buf), "\033[M%c%c%c",
 			       32 + button, 32 + pos.x + 1, 32 + pos.y + 1);
-	} else {
+	else
 		return;
-	}
 
 	ttywrite(&xw->term, buf, len);
 }
@@ -813,20 +775,22 @@ static void mousereport(struct st_window *xw, XEvent *ev)
 static void bpress(struct st_window *xw, XEvent *ev)
 {
 	struct st_term *term = &xw->term;
-	struct st_selection *sel = &xw->term.sel;
 
 	if (term->mousebtn || term->mousemotion) {
 		mousereport(xw, ev);
 	} else if (ev->xbutton.button == Button1) {
-		if (sel->bx != -1) {
-			sel->bx = -1;
-			xw->term.dirty[sel->b.y] = 1;
-			tfulldirt(&xw->term); // XXX
-		}
-		sel->mode = 1;
-		sel->type = SEL_REGULAR;
-		sel->ex = sel->bx = x2col(xw, ev->xbutton.x);
-		sel->ey = sel->by = y2row(xw, ev->xbutton.y);
+		unsigned type = SEL_REGULAR;
+		unsigned state = ev->xbutton.state & ~Button1Mask;
+
+		for (unsigned i = 1; i < ARRAY_SIZE(selmasks); i++)
+			if (match(selmasks[i], state)) {
+				type = i;
+				break;
+			}
+
+		xw->mousemotion = 1;
+		term_sel_start(term, type, mouse_pos(xw, ev));
+		gettimeofday(&xw->mousedown, NULL);
 	} else if (ev->xbutton.button == Button4) {
 		ttywrite(term, "\031", 1);
 	} else if (ev->xbutton.button == Button5) {
@@ -834,84 +798,72 @@ static void bpress(struct st_window *xw, XEvent *ev)
 	}
 }
 
-static void brelease(struct st_window *xw, XEvent *e)
+static bool isword(unsigned c)
+{
+	return c && !isspace(c);
+}
+
+static void brelease(struct st_window *xw, XEvent *ev)
 {
 	struct st_term *term = &xw->term;
 	struct st_selection *sel = &term->sel;
-	struct timeval now;
 
 	if (term->mousebtn || term->mousemotion) {
-		mousereport(xw, e);
+		mousereport(xw, ev);
 		return;
 	}
 
-	if (e->xbutton.button == Button2) {
+	if (ev->xbutton.button == Button2) {
 		selpaste(xw, NULL);
-	} else if (e->xbutton.button == Button1) {
-		sel->mode = 0;
-		getbuttoninfo(xw, e);
-		term->dirty[sel->ey] = 1;
-		if (sel->bx == sel->ex && sel->by == sel->ey) {
-			sel->bx = -1;
-			gettimeofday(&now, NULL);
+	} else if (ev->xbutton.button == Button1) {
+		struct coord end = mouse_pos(xw, ev);
 
-			if (TIMEDIFF(now, sel->tclick2) <=
+		memmove(xw->mouseup + 1,
+			xw->mouseup, sizeof(struct timeval) * 2);
+		gettimeofday(xw->mouseup, NULL);
+
+		if (sel->start.x == end.x &&
+		    sel->start.y == end.y) {
+			if (TIMEDIFF(xw->mouseup[0], xw->mouseup[2]) <
 			    tripleclicktimeout) {
 				/* triple click on the line */
-				sel->b.x = sel->bx = 0;
-				sel->e.x = sel->ex = term->size.x;
-				sel->b.y = sel->e.y = sel->ey;
-				term_selcopy(term);
-				xsetsel(xw);
-			} else if (TIMEDIFF(now, sel->tclick1) <=
+				sel->start.x = 0;
+				end.x = term->size.x - 1;
+			} else if (TIMEDIFF(xw->mouseup[0], xw->mouseup[1]) <
 				   doubleclicktimeout) {
 				/* double click to select word */
-				sel->bx = sel->ex;
-				while (sel->bx > 0 &&
-				       isalpha(term->line[sel->ey][sel->bx - 1].c))
-					sel->bx--;
-				sel->b.x = sel->bx;
-				while (sel->ex < term->size.x - 1 &&
-				       isalpha(term->line[sel->ey][sel->ex + 1].c))
-					sel->ex++;
-				sel->e.x = sel->ex;
-				sel->b.y = sel->e.y = sel->ey;
-				term_selcopy(term);
-				xsetsel(xw);
-			}
-		} else {
-			term_selcopy(term);
-			xsetsel(xw);
-		}
-	}
+				while (sel->start.x &&
+				       isword(term_pos(term, sel->start)[-1].c))
+					sel->start.x--;
 
-	memcpy(&sel->tclick2, &sel->tclick1, sizeof(struct timeval));
-	gettimeofday(&sel->tclick1, NULL);
+				while (end.x < term->size.x - 1 &&
+				       isword(term_pos(term, end)[1].c))
+					end.x++;
+			} else if (TIMEDIFF(xw->mouseup[0], xw->mousedown) <
+				   doubleclicktimeout) {
+				sel->type = SEL_NONE;
+			}
+		}
+
+		xw->mousemotion = 0;
+		term_sel_end(term, end);
+		term_sel_copy(term);
+		if (sel->clip)
+			xsetsel(xw);
+	}
 }
 
-static void bmotion(struct st_window *xw, XEvent *e)
+static void bmotion(struct st_window *xw, XEvent *ev)
 {
 	struct st_term *term = &xw->term;
-	int oldey, oldex, oldsby, oldsey;
 
 	if (term->mousebtn || term->mousemotion) {
-		mousereport(xw, e);
+		mousereport(xw, ev);
 		return;
 	}
 
-	if (!term->sel.mode)
-		return;
-
-	oldey = term->sel.ey;
-	oldex = term->sel.ex;
-	oldsby = term->sel.b.y;
-	oldsey = term->sel.e.y;
-	getbuttoninfo(xw, e);
-
-	if (oldey != term->sel.ey || oldex != term->sel.ex)
-		tsetdirt(term,
-			 min(term->sel.b.y, oldsby),
-			 max(term->sel.e.y, oldsey));
+	if (xw->mousemotion)
+		term_sel_end(term, mouse_pos(xw, ev));
 }
 
 /* Resizing code */

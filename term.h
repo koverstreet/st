@@ -78,11 +78,6 @@ enum escape_state {
 	ESC_TEST = 32,		/* Enter in test mode */
 };
 
-enum selection_type {
-	SEL_REGULAR = 1,
-	SEL_RECTANGULAR = 2
-};
-
 struct st_glyph {
 	unsigned	c;		/* character code */
 	union {
@@ -134,19 +129,17 @@ struct str_escape {
 	int		narg;		/* nb of args */
 };
 
-/* TODO: use better name for vars... */
 struct st_selection {
-	int		mode;
-	int		type;
-	int		bx, by;
-	int		ex, ey;
-	struct {
-		int	x, y;
-	} b, e;
+	enum {
+		SEL_NONE,
+		SEL_REGULAR,
+		SEL_RECTANGULAR,
+	}		type;
+
+	struct coord	start, end;
+	struct coord	p1, p2;
+
 	char		*clip;
-	bool		alt;
-	struct timeval	tclick1;
-	struct timeval	tclick2;
 };
 
 /* Internal representation of the screen */
@@ -202,7 +195,9 @@ struct st_term {
 };
 
 bool term_selected(struct st_selection *sel, int x, int y);
-void term_selcopy(struct st_term *term);
+void term_sel_copy(struct st_term *term);
+void term_sel_start(struct st_term *term, unsigned type, struct coord start);
+void term_sel_end(struct st_term *term, struct coord end);
 
 void term_echo(struct st_term *term, char *buf, int len);
 void term_read(struct st_term *term);

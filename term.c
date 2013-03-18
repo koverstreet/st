@@ -24,110 +24,151 @@
 
 static void selscroll(struct st_term *term, int orig, int n)
 {
-	if (term->sel.bx == -1)
+	struct st_selection *sel = &term->sel;
+
+	if (sel->type == SEL_NONE)
 		return;
 
-	if (BETWEEN(term->sel.by, orig, term->bot)
-	    || BETWEEN(term->sel.ey, orig, term->bot)) {
-		if ((term->sel.by += n) > term->bot ||
-		    (term->sel.ey += n) < term->top) {
-			term->sel.bx = -1;
+	if (BETWEEN(sel->start.y, orig, term->bot) ||
+	    BETWEEN(sel->end.y, orig, term->bot)) {
+		if ((sel->start.y += n) > term->bot ||
+		    (sel->end.y += n) < term->top) {
+			sel->type = SEL_NONE;
 			return;
 		}
 
-		switch (term->sel.type) {
+		switch (sel->type) {
+		case SEL_NONE:
+			break;
 		case SEL_REGULAR:
-			if (term->sel.by < term->top) {
-				term->sel.by = term->top;
-				term->sel.bx = 0;
+			if (sel->start.y < term->top) {
+				sel->start.y = term->top;
+				sel->start.x = 0;
 			}
-			if (term->sel.ey > term->bot) {
-				term->sel.ey = term->bot;
-				term->sel.ex = term->size.y;
+			if (sel->end.y > term->bot) {
+				sel->end.y = term->bot;
+				sel->end.x = term->size.y;
 			}
 			break;
 		case SEL_RECTANGULAR:
-			if (term->sel.by < term->top)
-				term->sel.by = term->top;
-			if (term->sel.ey > term->bot)
-				term->sel.ey = term->bot;
+			if (sel->start.y < term->top)
+				sel->start.y = term->top;
+			if (sel->end.y > term->bot)
+				sel->end.y = term->bot;
 			break;
 		};
-		term->sel.b.y = term->sel.by, term->sel.b.x = term->sel.bx;
-		term->sel.e.y = term->sel.ey, term->sel.e.x = term->sel.ex;
+
+		sel->p1 = sel->start;
+		sel->p2 = sel->end;
 	}
 }
 
 bool term_selected(struct st_selection *sel, int x, int y)
 {
-	int bx, ex;
+	switch (sel->type) {
+	case SEL_NONE:
+		return false;
+	case SEL_REGULAR:
+		if (y < sel->p1.y || y > sel->p2.y)
+			return false;
 
-	if (sel->ey == y && sel->by == y) {
-		bx = min(sel->bx, sel->ex);
-		ex = max(sel->bx, sel->ex);
-		return BETWEEN(x, bx, ex);
+		if (y == sel->p1.y && x < sel->p1.x)
+			return false;
+
+		if (y == sel->p2.y && x > sel->p2.x)
+			return false;
+
+		return true;
+	case SEL_RECTANGULAR:
+		return sel->p1.y <= y && y <= sel->p2.y &&
+			sel->p1.x <= x && x <= sel->p2.x;
 	}
 
-	return ((sel->b.y < y && y < sel->e.y)
-		|| (y == sel->e.y && x <= sel->e.x))
-	    || (y == sel->b.y && x >= sel->b.x
-		&& (x <= sel->e.x || sel->b.y != sel->e.y));
-
-	switch (sel->type) {
-	case SEL_REGULAR:
-		return ((sel->b.y < y && y < sel->e.y)
-			|| (y == sel->e.y && x <= sel->e.x))
-		    || (y == sel->b.y && x >= sel->b.x
-			&& (x <= sel->e.x || sel->b.y != sel->e.y));
-	case SEL_RECTANGULAR:
-		return ((sel->b.y <= y && y <= sel->e.y)
-			&& (sel->b.x <= x && x <= sel->e.x));
-	};
+	return false;
 }
 
-void term_selcopy(struct st_term *term)
+void term_sel_copy(struct st_term *term)
 {
-	unsigned char *str, *ptr;
-	int x, y, bufsize, is_selected = 0;
-	struct st_glyph *gp, *last;
+	struct st_selection *sel = &term->sel;
+	unsigned char *str = NULL, *ptr;
 
-	if (term->sel.bx == -1) {
-		str = NULL;
-	} else {
-		bufsize = (term->size.y + 1) *
-			(term->sel.e.y - term->sel.b.y + 1) * UTF_SIZ;
-		ptr = str = xmalloc(bufsize);
+	if (sel->type == SEL_NONE)
+		goto out;
 
-		/* append every set & selected glyph to the selection */
-		for (y = term->sel.b.y; y < term->sel.e.y + 1; y++) {
-			is_selected = 0;
-			gp = &term->line[y][0];
-			last = gp + term->size.y;
+	ptr = str = xmalloc((sel->p2.y - sel->p1.y + 1) *
+			    term->size.y * UTF_SIZ);
 
-			while (--last >= gp && !last->c)
-				/* nothing */ ;
+	/* append every set & selected glyph to the selection */
+	for (unsigned y = sel->p1.y; y <= sel->p2.y; y++) {
+		struct st_glyph *gp = &term->line[y][0];
+		struct st_glyph *last = &term->line[y][term->size.x - 1];
 
-			for (x = 0; gp <= last; x++, ++gp) {
-				if (!term_selected(&term->sel, x, y)) {
-					continue;
-				} else {
-					is_selected = 1;
-				}
+		if (sel->type == SEL_RECTANGULAR ||
+		    y == sel->p1.y)
+			gp = &term->line[y][sel->p1.x];
 
-				if (gp->c)
-					ptr += FcUcs4ToUtf8(gp->c, ptr);
-				else
-					*(ptr++) = ' ';
-			}
-			/* \n at the end of every selected line except for the last one */
-			if (is_selected && y < term->sel.e.y)
-				*ptr++ = '\r';
+		if (sel->type == SEL_RECTANGULAR ||
+		    y == sel->p2.y)
+			last = &term->line[y][sel->p2.x];
+
+		while (last > gp && !last->c)
+			last--;
+
+		for (; gp <= last; gp++) {
+			int ret = FcUcs4ToUtf8(gp->c, ptr);
+			if (ret > 0)
+				ptr += ret;
+			else
+				*ptr++ = ' ';
 		}
-		*ptr = 0;
+
+		/* \n at the end of every selected line except for the last one */
+		if (y < sel->p2.y)
+			*ptr++ = '\r';
+	}
+	*ptr = 0;
+out:
+	free(sel->clip);
+	sel->clip = (char *) str;
+}
+
+void term_sel_start(struct st_term *term, unsigned type, struct coord start)
+{
+	struct st_selection *sel = &term->sel;
+
+	sel->type = type;
+	sel->start = sel->end = sel->p1 = sel->p2 = start;
+
+	tfulldirt(term);
+}
+
+void term_sel_end(struct st_term *term, struct coord end)
+{
+	struct st_selection *sel = &term->sel;
+
+	sel->p1 = sel->start;
+	sel->p2 = sel->end = end;
+
+	switch (sel->type) {
+	case SEL_NONE:
+		break;
+	case SEL_REGULAR:
+		if (sel->p1.y > sel->p2.y ||
+		    (sel->p1.y == sel->p2.y &&
+		     sel->p1.x > sel->p2.x))
+			swap(sel->p1, sel->p2);
+
+		break;
+	case SEL_RECTANGULAR:
+		if (sel->p1.x > sel->p2.x)
+			swap(sel->p1.x, sel->p2.x);
+		if (sel->p1.y > sel->p2.y)
+			swap(sel->p1.y, sel->p2.y);
+
+		break;
 	}
 
-	free(term->sel.clip);
-	term->sel.clip = (char *) str;
+	tfulldirt(term);
 }
 
 /* Escape handling */
@@ -580,6 +621,7 @@ static void tsetscroll(struct st_term *term, unsigned t, unsigned b)
 static void tswapscreen(struct st_term *term)
 {
 	swap(term->line, term->alt);
+	term->sel.type = SEL_NONE;
 	term->altscreen ^= 1;
 	tfulldirt(term);
 }
@@ -763,7 +805,7 @@ static void csihandle(struct st_term *term)
 			tputtab(term, 1);
 		break;
 	case 'J':		/* ED -- Clear screen */
-		term->sel.bx = -1;
+		term->sel.type = SEL_NONE;
 		switch (csi->arg[0]) {
 		case 0:	/* below */
 			tclearregion(term, term->c.pos, term->size);
@@ -1194,9 +1236,9 @@ static void tputc(struct st_term *term, unsigned c)
 	if (control && !term->c.attr.gfx)
 		return;
 
-	if (term->sel.bx != -1 &&
-	    BETWEEN(term->c.pos.y, term->sel.by, term->sel.ey))
-		term->sel.bx = -1;
+	if (term->sel.type != SEL_NONE &&
+	    BETWEEN(term->c.pos.y, term->sel.p1.y, term->sel.p2.y))
+		term->sel.type = SEL_NONE;
 
 	if (term->wrap && term->c.wrapnext)
 		tnewline(term, 1);	/* always go to first col */
@@ -1499,7 +1541,6 @@ void term_init(struct st_term *term, int col, int row, char *shell,
 		term->dirty[row] = 0;
 	}
 
-	term->sel.bx = -1;
 	term->numlock = 1;
 	memset(term->tabs, 0, term->size.x * sizeof(*term->tabs));
 	/* setup screen */
