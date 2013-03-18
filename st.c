@@ -503,6 +503,9 @@ static void xdraw_glyphs(struct st_window *xw, struct coord pos,
 		XftFont *xfont = font->match;
 		bool found;
 		unsigned ucs = glyphs[i].c;
+
+		if (!ucs)
+			ucs = ' ';
 retry:
 		xglyphs[nxglyphs] = XftCharIndex(xw->dpy, xfont, ucs);
 		found = xglyphs[nxglyphs];
