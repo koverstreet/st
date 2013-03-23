@@ -131,10 +131,15 @@ struct st_glyph {
 	};
 };
 
+struct coord {
+	unsigned	x, y;
+};
+
+#define ORIGIN	(struct coord) {0, 0}
+
 struct tcursor {
 	struct st_glyph	attr;		/* current char attributes */
-	int		x;
-	int		y;
+	struct coord	pos;
 	unsigned	wrapnext:1;
 	unsigned	origin:1;
 };
@@ -182,15 +187,14 @@ struct st_term {
 	unsigned char	cmdbuf[BUFSIZ];
 	unsigned	cmdbuflen;
 
-	int		row;	/* nb row */
-	int		col;	/* nb col */
+	struct coord	size;
 	struct st_glyph	**line;	/* screen */
 	struct st_glyph	**alt;	/* alternate screen */
 	bool		*dirty;	/* dirtyness of lines */
 	struct tcursor	c;	/* cursor */
 	struct tcursor	saved;
-	int		top;	/* top    scroll limit */
-	int		bot;	/* bottom scroll limit */
+	unsigned	top;	/* top    scroll limit */
+	unsigned	bot;	/* bottom scroll limit */
 
 	unsigned	wrap:1;
 	unsigned	insert:1;
@@ -284,11 +288,11 @@ struct st_window {
 
 	int		scr;
 	bool		isfixed;	/* is fixed geometry? */
-	int		fx, fy, fw, fh;	/* fixed geometry */
-	int		tw, th;		/* tty width and height */
-	int		w, h;		/* window width and height */
-	int		ch;		/* char height */
-	int		cw;		/* char width  */
+	int		fx, fy;		/* fixed geometry */
+	struct coord	ttysize;
+	struct coord	winsize;
+	struct coord	fixedsize;	/* kill? */
+	struct coord	charsize;
 	unsigned	visible:1;
 	unsigned	redraw:1;
 	unsigned	focused:1;
@@ -509,20 +513,17 @@ static void ttywrite(struct st_term *term, const char *s, size_t n)
 
 /* ? */
 
-static void tsetdirt(struct st_term *term, int top, int bot)
+static void tsetdirt(struct st_term *term, unsigned top, unsigned bot)
 {
-	int i;
+	bot = min(bot, term->size.y - 1);
 
-	bot = min(bot, term->row - 1);
-	top = min(top, term->row - 1);
-
-	for (i = top; i <= bot; i++)
+	for (unsigned i = top; i <= bot; i++)
 		term->dirty[i] = 1;
 }
 
 static void tfulldirt(struct st_term *term)
 {
-	tsetdirt(term, 0, term->row - 1);
+	tsetdirt(term, 0, term->size.y - 1);
 }
 
 /* Selection code */
@@ -564,7 +565,7 @@ static void selcopy(struct st_window *xw)
 	if (term->sel.bx == -1) {
 		str = NULL;
 	} else {
-		bufsize = (term->col + 1) *
+		bufsize = (term->size.y + 1) *
 			(term->sel.e.y - term->sel.b.y + 1) * UTF_SIZ;
 		ptr = str = xmalloc(bufsize);
 
@@ -572,7 +573,7 @@ static void selcopy(struct st_window *xw)
 		for (y = term->sel.b.y; y < term->sel.e.y + 1; y++) {
 			is_selected = 0;
 			gp = &term->line[y][0];
-			last = gp + term->col;
+			last = gp + term->size.y;
 
 			while (--last >= gp && !last->set)
 				/* nothing */ ;
@@ -708,7 +709,7 @@ static void selscroll(struct st_term *term, int orig, int n)
 			}
 			if (term->sel.ey > term->bot) {
 				term->sel.ey = term->bot;
-				term->sel.ex = term->col;
+				term->sel.ex = term->size.y;
 			}
 			break;
 		case SEL_RECTANGULAR:
@@ -755,9 +756,10 @@ static void xtermclear(struct st_window *xw,
 {
 	XftDrawRect(xw->draw,
 		    &xw->col[xw->term.reverse ? defaultfg : defaultbg],
-		    borderpx + col1 * xw->cw,
-		    borderpx + row1 * xw->ch,
-		    (col2 - col1 + 1) * xw->cw, (row2 - row1 + 1) * xw->ch);
+		    borderpx + col1 * xw->charsize.x,
+		    borderpx + row1 * xw->charsize.y,
+		    (col2 - col1 + 1) * xw->charsize.x,
+		    (row2 - row1 + 1) * xw->charsize.y);
 }
 
 /*
@@ -772,12 +774,14 @@ static void xclear(struct st_window *xw,
 }
 
 static void xdraws(struct st_window *xw,
-		   char *s, struct st_glyph base, int x, int y,
+		   char *s, struct st_glyph base,
+		   struct coord pos,
 		   int charlen, int bytelen)
 {
-	int winx = borderpx + x * xw->cw, winy = borderpx + y * xw->ch,
-	    width = charlen * xw->cw, xp, i;
-	int frp, frcflags;
+	int winx = borderpx + pos.x * xw->charsize.x;
+	int winy = borderpx + pos.y * xw->charsize.y;
+	int width = charlen * xw->charsize.x;
+	int xp, i, frp, frcflags;
 	int u8fl, u8fblen, u8cblen, doesexist;
 	char *u8c, *u8fs;
 	unsigned u8char;
@@ -852,21 +856,24 @@ static void xdraws(struct st_window *xw,
 		swap(bg, fg);
 
 	/* Intelligent cleaning up of the borders. */
-	if (x == 0)
-		xclear(xw, 0, (y == 0) ? 0 : winy, borderpx,
-		       winy + xw->ch + ((y >= xw->term.row - 1) ? xw->h : 0));
+	if (pos.x == 0)
+		xclear(xw, 0, (pos.y == 0) ? 0 : winy, borderpx,
+		       winy + xw->charsize.y +
+		       ((pos.y >= xw->term.size.y - 1) ? xw->winsize.y : 0));
 
-	if (x + charlen >= xw->term.col)
-		xclear(xw, winx + width, (y == 0) ? 0 : winy, xw->w,
-		       ((y >= xw->term.row - 1) ? xw->h : (winy + xw->ch)));
+	if (pos.x + charlen >= xw->term.size.x)
+		xclear(xw, winx + width, (pos.y == 0)
+		       ? 0 : winy, xw->winsize.x,
+		       ((pos.y >= xw->term.size.y - 1)
+			? xw->winsize.y : (winy + xw->charsize.y)));
 
-	if (y == 0)
+	if (pos.y == 0)
 		xclear(xw, winx, 0, winx + width, borderpx);
-	if (y == xw->term.row - 1)
-		xclear(xw, winx, winy + xw->ch, winx + width, xw->h);
+	if (pos.y == xw->term.size.y - 1)
+		xclear(xw, winx, winy + xw->charsize.y, winx + width, xw->winsize.y);
 
 	/* Clean up the region we want to draw to. */
-	XftDrawRect(xw->draw, bg, winx, winy, width, xw->ch);
+	XftDrawRect(xw->draw, bg, winx, winy, width, xw->charsize.y);
 
 	fcsets[0] = font->set;
 	for (xp = winx; bytelen > 0;) {
@@ -989,30 +996,37 @@ static void xdraws(struct st_window *xw,
 			    width, 1);
 }
 
+struct st_glyph *term_pos(struct st_term *term, struct coord pos)
+{
+	return &term->line[pos.y][pos.x];
+}
+
 static void xdrawcursor(struct st_window *xw)
 {
-	static int oldx = 0, oldy = 0;
+	static struct coord old;
 	int sl;
-	struct st_glyph g;
+	struct st_glyph g, *p, *oldp;
 
 	g.c[0] = ' ';
 	g.cmp = 0;
 	g.bg = defaultcs;
 	g.fg = defaultbg;
 
-	oldx = min(oldx, xw->term.col - 1);
-	oldy = min(oldy, xw->term.row - 1);
+	old.x = min(old.x, xw->term.size.x - 1);
+	old.y = min(old.y, xw->term.size.y - 1);
 
-	if (xw->term.line[xw->term.c.y][xw->term.c.x].set)
-		memcpy(g.c, xw->term.line[xw->term.c.y][xw->term.c.x].c, UTF_SIZ);
+	p = term_pos(&xw->term, xw->term.c.pos);
+
+	if (p->set)
+		memcpy(g.c, p->c, UTF_SIZ);
 
 	/* remove the old cursor */
-	if (xw->term.line[oldy][oldx].set) {
-		sl = utf8size(xw->term.line[oldy][oldx].c);
-		xdraws(xw, xw->term.line[oldy][oldx].c, xw->term.line[oldy][oldx],
-		       oldx, oldy, 1, sl);
+	oldp = term_pos(&xw->term, old);
+	if (oldp->set) {
+		sl = utf8size(oldp->c);
+		xdraws(xw, oldp->c, *oldp, old, 1, sl);
 	} else {
-		xtermclear(xw, oldx, oldy, oldx, oldy);
+		xtermclear(xw, old.x, old.y, old.x, old.y);
 	}
 
 	/* draw the new one */
@@ -1028,8 +1042,8 @@ static void xdrawcursor(struct st_window *xw)
 		}
 
 		sl = utf8size(g.c);
-		xdraws(xw, g.c, g, xw->term.c.x, xw->term.c.y, 1, sl);
-		oldx = xw->term.c.x, oldy = xw->term.c.y;
+		xdraws(xw, g.c, g, xw->term.c.pos, 1, sl);
+		old = xw->term.c.pos;
 	}
 }
 
@@ -1051,7 +1065,7 @@ static void drawregion(struct st_window *xw,
 		if (!xw->term.dirty[y])
 			continue;
 
-		xtermclear(xw, 0, y, xw->term.col, y);
+		xtermclear(xw, 0, y, xw->term.size.x, y);
 		xw->term.dirty[y] = 0;
 		base = xw->term.line[y][0];
 		ic = ib = ox = 0;
@@ -1060,7 +1074,8 @@ static void drawregion(struct st_window *xw,
 			if (ena_sel && *(new.c) && selected(&xw->term.sel, x, y))
 				new.reverse ^= 1;
 			if (ib > 0 && new.cmp != base.cmp) {
-				xdraws(xw, buf, base, ox, y, ic, ib);
+				xdraws(xw, buf, base, (struct coord) {ox, y},
+				       ic, ib);
 				ic = ib = 0;
 			}
 			if (new.set) {
@@ -1076,16 +1091,16 @@ static void drawregion(struct st_window *xw,
 			}
 		}
 		if (ib > 0)
-			xdraws(xw, buf, base, ox, y, ic, ib);
+			xdraws(xw, buf, base, (struct coord) {ox, y}, ic, ib);
 	}
 	xdrawcursor(xw);
 }
 
 static void draw(struct st_window *xw)
 {
-	drawregion(xw, 0, 0, xw->term.col, xw->term.row);
+	drawregion(xw, 0, 0, xw->term.size.x, xw->term.size.y);
 	XCopyArea(xw->dpy, xw->buf, xw->win, xw->gc,
-		  0, 0, xw->w, xw->h, 0, 0);
+		  0, 0, xw->winsize.x, xw->winsize.y, 0, 0);
 	XSetForeground(xw->dpy, xw->gc,
 		       xw->col[xw->term.reverse ? defaultfg : defaultbg].pixel);
 }
@@ -1165,30 +1180,57 @@ static void csireset(void)
 
 /* t code */
 
-static void tclearregion(struct st_term *term,
-			 int x1, int y1, int x2, int y2, int bce)
+static void __tclearregion(struct st_term *term, struct coord p1,
+			 struct coord p2, int bce)
 {
-	int x, y;
+	struct coord p;
 
-	if (x1 > x2)
-		swap(x1, x2);
-	if (y1 > y2)
-		swap(y1, y2);
+	for (p.y = p1.y; p.y < p2.y; p.y++) {
+		term->dirty[p.y] = 1;
 
-	x1 = min(x1, term->col - 1);
-	x2 = min(x2, term->col - 1);
-	y1 = min(y1, term->row - 1);
-	y2 = min(y2, term->row - 1);
+		for (p.x = p1.x; p.x < p2.x; p.x++) {
+			struct st_glyph *g = term_pos(term, p);
 
-	for (y = y1; y <= y2; y++) {
-		term->dirty[y] = 1;
-		for (x = x1; x <= x2; x++) {
-			if (bce) {
-				term->line[y][x] = term->c.attr;
-				memcpy(term->line[y][x].c, " ", 2);
-				term->line[y][x].set = 1;
-			} else {
-				term->line[y][x].set = 0;
+			g->set = bce;
+
+			if (g->set) {
+				*g = term->c.attr;
+
+				memcpy(g->c, " ", 2);
+				g->set = 1;
+			}
+		}
+	}
+}
+
+static void tclearregion(struct st_term *term, struct coord p1,
+			 struct coord p2, int bce)
+{
+	struct coord p;
+
+	if (p1.x > p2.x)
+		swap(p1.x, p2.x);
+	if (p1.y > p2.y)
+		swap(p1.y, p2.y);
+
+	p1.x = min(p1.x, term->size.x - 1);
+	p2.x = min(p2.x, term->size.x - 1);
+	p1.y = min(p1.y, term->size.y - 1);
+	p2.y = min(p2.y, term->size.y - 1);
+
+	for (p.y = p1.y; p.y <= p2.y; p.y++) {
+		term->dirty[p.y] = 1;
+
+		for (p.x = p1.x; p.x <= p2.x; p.x++) {
+			struct st_glyph *g = term_pos(term, p);
+
+			g->set = bce;
+
+			if (g->set) {
+				*g = term->c.attr;
+
+				memcpy(g->c, " ", 2);
+				g->set = 1;
 			}
 		}
 	}
@@ -1198,9 +1240,11 @@ static void tscrolldown(struct st_term *term, int orig, int n)
 {
 	int i;
 
-	n = clamp(n, 0, term->bot - orig + 1);
+	n = clamp_t(int, n, 0, term->bot - orig + 1);
 
-	tclearregion(term, 0, term->bot - n + 1, term->col - 1, term->bot, 0);
+	tclearregion(term,
+		     (struct coord) {0, term->bot - n + 1},
+		     (struct coord) {term->size.x - 1, term->bot}, 0);
 
 	for (i = term->bot; i >= orig + n; i--) {
 		swap(term->line[i], term->line[i - n]);
@@ -1216,9 +1260,11 @@ static void tscrollup(struct st_term *term, int orig, int n)
 {
 	int i;
 
-	n = clamp(n, 0, term->bot - orig + 1);
+	n = clamp_t(int, n, 0, term->bot - orig + 1);
 
-	tclearregion(term, 0, orig, term->col - 1, orig + n - 1, 0);
+	tclearregion(term,
+		     (struct coord) {0, orig},
+		     (struct coord) {term->size.x - 1, orig + n - 1}, 0);
 
 	/* XXX: optimize? */
 	for (i = orig; i <= term->bot - n; i++) {
@@ -1231,22 +1277,44 @@ static void tscrollup(struct st_term *term, int orig, int n)
 	selscroll(term, orig, -n);
 }
 
-static void tmoveto(struct st_term *term, int x, int y)
+static void tmovex(struct st_term *term, unsigned x)
 {
-	x = min(x, term->col - 1);
-	y = term->c.origin
-		? clamp(y, term->top, term->bot)
-		: min(y, term->row - 1);
-
 	term->c.wrapnext = 0;
-	term->c.x = x;
-	term->c.y = y;
+	term->c.pos.x = min(x, term->size.x - 1);
+}
+
+static void tmovey(struct st_term *term, unsigned y)
+{
+	term->c.wrapnext = 0;
+	term->c.pos.y = term->c.origin
+		? clamp(y, term->top, term->bot)
+		: min(y, term->size.y - 1);
+}
+
+static void tmoveto(struct st_term *term, struct coord pos)
+{
+	tmovex(term, pos.x);
+	tmovey(term, pos.y);
 }
 
 /* for absolute user moves, when decom is set */
-static void tmoveato(struct st_term *term, int x, int y)
+static void tmoveato(struct st_term *term, struct coord pos)
 {
-	tmoveto(term, x, y + (term->c.origin ? term->top : 0));
+	if (term->c.origin)
+		pos.y += term->top;
+
+	tmoveto(term, pos);
+}
+
+static void tmoverel(struct st_term *term, int x, int y)
+{
+	term->c.pos.x = clamp_t(int, term->c.pos.x + x, 0, term->size.x - 1);
+	term->c.pos.y = clamp_t(int, term->c.pos.y + y, 0, term->size.y - 1);
+
+	if (term->c.origin)
+		term->c.pos.y = clamp(term->c.pos.y, term->top, term->bot);
+
+	term->c.wrapnext = 0;
 }
 
 static void tcursor_save(struct st_term *term)
@@ -1257,7 +1325,7 @@ static void tcursor_save(struct st_term *term)
 static void tcursor_load(struct st_term *term)
 {
 	term->c = term->saved;
-	tmoveto(term, term->c.x, term->c.y);
+	tmoveto(term, term->c.pos);
 }
 
 static void treset(struct st_term *term)
@@ -1269,11 +1337,11 @@ static void treset(struct st_term *term)
 	term->c.attr.fg = defaultcs;
 	term->c.attr.bg = defaultbg;
 
-	memset(term->tabs, 0, term->col * sizeof(*term->tabs));
-	for (i = tabspaces; i < term->col; i += tabspaces)
+	memset(term->tabs, 0, term->size.x * sizeof(*term->tabs));
+	for (i = tabspaces; i < term->size.x; i += tabspaces)
 		term->tabs[i] = 1;
 	term->top = 0;
-	term->bot = term->row - 1;
+	term->bot = term->size.y - 1;
 
 	term->wrap	= 1;
 	term->insert	= 0;
@@ -1289,43 +1357,50 @@ static void treset(struct st_term *term)
 	term->appcursor	= 0;
 	term->mousesgr	= 0;
 
-	tclearregion(term, 0, 0, term->col - 1, term->row - 1, 0);
-	tmoveto(term, 0, 0);
+	__tclearregion(term, ORIGIN, term->size, 0);
+	tmoveto(term, ORIGIN);
 	tcursor_save(term);
 }
 
 static void tputtab(struct st_term *term, bool forward)
 {
-	unsigned x = term->c.x;
+	struct coord pos = term->c.pos;
 
 	if (forward) {
-		if (x == term->col)
+		if (pos.x == term->size.x)
 			return;
-		for (++x; x < term->col && !term->tabs[x]; ++x)
+		for (++pos.x;
+		     pos.x < term->size.x && !term->tabs[pos.x];
+		     ++pos.x)
 			/* nothing */ ;
 	} else {
-		if (x == 0)
+		if (pos.x == 0)
 			return;
-		for (--x; x > 0 && !term->tabs[x]; --x)
+		for (--pos.x;
+		     pos.x > 0 && !term->tabs[pos.x];
+		     --pos.x)
 			/* nothing */ ;
 	}
-	tmoveto(term, x, term->c.y);
+	tmoveto(term, pos);
 }
 
 static void tnewline(struct st_term *term, int first_col)
 {
-	int y = term->c.y;
+	struct coord pos = term->c.pos;
 
-	if (y == term->bot)
+	if (first_col)
+		pos.x = 0;
+
+	if (pos.y == term->bot)
 		tscrollup(term, term->top, 1);
 	else
-		y++;
+		pos.y++;
 
-	tmoveto(term, first_col ? 0 : term->c.x, y);
+	tmoveto(term, pos);
 }
 
 static void tsetchar(struct st_term *term, char *c,
-		     struct st_glyph *attr, int x, int y)
+		     struct st_glyph *attr, struct coord pos)
 {
 	static char *vt100_0[62] = {	/* 0x41 - 0x7e */
 		"↑", "↓", "→", "←", "█", "▚", "☃",	/* A - G */
@@ -1338,6 +1413,8 @@ static void tsetchar(struct st_term *term, char *c,
 		"│", "≤", "≥", "π", "≠", "£", "·",	/* x - ~ */
 	};
 
+	struct st_glyph *g = term_pos(term, pos);
+
 	/*
 	 * The table is proudly stolen from rxvt.
 	 */
@@ -1345,66 +1422,70 @@ static void tsetchar(struct st_term *term, char *c,
 		if (c[0] >= 0x41 && c[0] <= 0x7e && vt100_0[c[0] - 0x41])
 			c = vt100_0[c[0] - 0x41];
 
-	term->dirty[y] = 1;
-	term->line[y][x] = *attr;
-	memcpy(term->line[y][x].c, c, UTF_SIZ);
-	term->line[y][x].set = 1;
+	term->dirty[pos.y] = 1;
+	*g = *attr;
+	memcpy(g->c, c, UTF_SIZ);
+	g->set = 1;
 }
 
 static void tdeletechar(struct st_term *term, int n)
 {
-	int src = term->c.x + n;
-	int dst = term->c.x;
-	int size = term->col - src;
+	unsigned size;
+	struct coord src = term->c.pos, dst = term->c.pos;
+	struct coord start = term->c.pos, end = term->c.pos;
 
-	term->dirty[term->c.y] = 1;
+	src.x += n;
+	size = term->size.x - src.x;
 
-	if (src < term->col) {
-		memmove(&term->line[term->c.y][dst],
-			&term->line[term->c.y][src],
+	end.x = term->size.x - 1;
+
+	if (src.x < term->size.x) {
+		memmove(term_pos(term, dst),
+			term_pos(term, src),
 			size * sizeof(struct st_glyph));
-		tclearregion(term, term->col - n, term->c.y,
-			     term->col - 1, term->c.y, 0);
-	} else {
-		tclearregion(term, term->c.x, term->c.y,
-			     term->col - 1, term->c.y, 0);
+
+		start.x = term->size.x - n;
 	}
+
+	tclearregion(term, start, end, 0);
 }
 
 static void tinsertblank(struct st_term *term, int n)
 {
-	int src = term->c.x;
-	int dst = src + n;
-	int size = term->col - dst;
+	unsigned size;
+	struct coord src = term->c.pos, dst = term->c.pos;
+	struct coord start = term->c.pos, end = term->c.pos;
 
-	term->dirty[term->c.y] = 1;
+	dst.x += n;
+	size = term->size.x - dst.x;
 
-	if (dst < term->col) {
-		memmove(&term->line[term->c.y][dst],
-			&term->line[term->c.y][src],
+	end.x = term->size.x - 1;
+
+	if (dst.x < term->size.x) {
+		memmove(term_pos(term, dst),
+			term_pos(term, src),
 			size * sizeof(struct st_glyph));
-		tclearregion(term, src, term->c.y,
-			     dst - 1, term->c.y, 0);
-	} else {
-		tclearregion(term, term->c.x, term->c.y,
-			     term->col - 1, term->c.y, 0);
+
+		end.x = dst.x - 1;
 	}
+
+	tclearregion(term, start, end, 0);
 }
 
 static void tinsertblankline(struct st_term *term, int n)
 {
-	if (term->c.y < term->top || term->c.y > term->bot)
+	if (term->c.pos.y < term->top || term->c.pos.y > term->bot)
 		return;
 
-	tscrolldown(term, term->c.y, n);
+	tscrolldown(term, term->c.pos.y, n);
 }
 
 static void tdeleteline(struct st_term *term, int n)
 {
-	if (term->c.y < term->top || term->c.y > term->bot)
+	if (term->c.pos.y < term->top || term->c.pos.y > term->bot)
 		return;
 
-	tscrollup(term, term->c.y, n);
+	tscrollup(term, term->c.pos.y, n);
 }
 
 static void tsetattr(struct st_term *term, int *attr, int l)
@@ -1513,10 +1594,10 @@ static void tsetattr(struct st_term *term, int *attr, int l)
 	}
 }
 
-static void tsetscroll(struct st_term *term, int t, int b)
+static void tsetscroll(struct st_term *term, unsigned t, unsigned b)
 {
-	t = min(t, term->row - 1);
-	b = min(b, term->row - 1);
+	t = min(t, term->size.y - 1);
+	b = min(b, term->size.y - 1);
 
 	if (t > b)
 		swap(t, b);
@@ -1554,7 +1635,7 @@ static void tsetmode(struct st_window *xw,
 				break;
 			case 6:	/* DECOM -- Origin */
 				term->c.origin = set;
-				tmoveato(term, 0, 0);
+				tmoveato(term, ORIGIN);
 				break;
 			case 7:	/* DECAWM -- Auto wrap */
 				term->wrap = set;
@@ -1587,9 +1668,8 @@ static void tsetmode(struct st_window *xw,
 			case 47:
 			case 1047:{
 					if (term->altscreen)
-						tclearregion(term, 0, 0,
-							     term->col - 1,
-							     term->row - 1, 0);
+						__tclearregion(term, ORIGIN,
+							       term->size, 0);
 					if (set != term->altscreen)
 						tswapscreen(term);
 					if (*args != 1049)
@@ -1652,12 +1732,12 @@ static void csihandle(struct st_window *xw)
 		break;
 	case 'A':		/* CUU -- Cursor <n> Up */
 		DEFAULT(csiescseq.arg[0], 1);
-		tmoveto(term, term->c.x, term->c.y - csiescseq.arg[0]);
+		tmoverel(term, 0, -csiescseq.arg[0]);
 		break;
 	case 'B':		/* CUD -- Cursor <n> Down */
 	case 'e':		/* VPR --Cursor <n> Down */
 		DEFAULT(csiescseq.arg[0], 1);
-		tmoveto(term, term->c.x, term->c.y + csiescseq.arg[0]);
+		tmoverel(term, 0, csiescseq.arg[0]);
 		break;
 	case 'c':		/* DA -- Device Attributes */
 		if (csiescseq.arg[0] == 0)
@@ -1666,28 +1746,30 @@ static void csihandle(struct st_window *xw)
 	case 'C':		/* CUF -- Cursor <n> Forward */
 	case 'a':		/* HPR -- Cursor <n> Forward */
 		DEFAULT(csiescseq.arg[0], 1);
-		tmoveto(term, term->c.x + csiescseq.arg[0], term->c.y);
+		tmoverel(term, csiescseq.arg[0], 0);
 		break;
 	case 'D':		/* CUB -- Cursor <n> Backward */
 		DEFAULT(csiescseq.arg[0], 1);
-		tmoveto(term, term->c.x - csiescseq.arg[0], term->c.y);
+		tmoverel(term, -csiescseq.arg[0], 0);
 		break;
 	case 'E':		/* CNL -- Cursor <n> Down and first col */
 		DEFAULT(csiescseq.arg[0], 1);
-		tmoveto(term, 0, term->c.y + csiescseq.arg[0]);
+		tmoverel(term, 0, csiescseq.arg[0]);
+		term->c.pos.x = 0;
 		break;
 	case 'F':		/* CPL -- Cursor <n> Up and first col */
 		DEFAULT(csiescseq.arg[0], 1);
-		tmoveto(term, 0, term->c.y - csiescseq.arg[0]);
+		tmoverel(term, 0, -csiescseq.arg[0]);
+		term->c.pos.x = 0;
 		break;
 	case 'g':		/* TBC -- Tabulation clear */
 		switch (csiescseq.arg[0]) {
 		case 0:	/* clear current tab stop */
-			term->tabs[term->c.x] = 0;
+			term->tabs[term->c.pos.x] = 0;
 			break;
 		case 3:	/* clear all the tabs */
 			memset(term->tabs, 0,
-			       term->col * sizeof(*term->tabs));
+			       term->size.x * sizeof(*term->tabs));
 			break;
 		default:
 			goto unknown;
@@ -1696,13 +1778,14 @@ static void csihandle(struct st_window *xw)
 	case 'G':		/* CHA -- Move to <col> */
 	case '`':		/* HPA */
 		DEFAULT(csiescseq.arg[0], 1);
-		tmoveto(term, csiescseq.arg[0] - 1, term->c.y);
+		tmovex(term, csiescseq.arg[0] - 1);
 		break;
 	case 'H':		/* CUP -- Move to <row> <col> */
 	case 'f':		/* HVP */
 		DEFAULT(csiescseq.arg[0], 1);
 		DEFAULT(csiescseq.arg[1], 1);
-		tmoveato(term, csiescseq.arg[1] - 1, csiescseq.arg[0] - 1);
+		tmoveato(term, (struct coord)
+			 {csiescseq.arg[1] - 1, csiescseq.arg[0] - 1});
 		break;
 	case 'I':		/* CHT -- Cursor Forward Tabulation <n> tab stops */
 		DEFAULT(csiescseq.arg[0], 1);
@@ -1713,23 +1796,20 @@ static void csihandle(struct st_window *xw)
 		term->sel.bx = -1;
 		switch (csiescseq.arg[0]) {
 		case 0:	/* below */
-			tclearregion(term, term->c.x, term->c.y,
-				     term->col - 1, term->c.y, 1);
-			if (term->c.y < term->row - 1) {
-				tclearregion(term, 0, term->c.y + 1,
-					     term->col - 1, term->row - 1, 1);
-			}
+			__tclearregion(term, term->c.pos, term->size, 1);
+			if (term->c.pos.y < term->size.y - 1)
+				__tclearregion(term, (struct coord)
+					       {0, term->c.pos.y + 1},
+					       term->size, 1);
 			break;
 		case 1:	/* above */
-			if (term->c.y > 1)
-				tclearregion(term, 0, 0,
-					     term->col - 1, term->c.y - 1, 1);
-			tclearregion(term, 0, term->c.y,
-				     term->c.x, term->c.y, 1);
+			if (term->c.pos.y > 1)
+				__tclearregion(term, ORIGIN, term->size, 1);
+			tclearregion(term, (struct coord) {0, term->c.pos.y},
+				     term->c.pos, 1);
 			break;
 		case 2:	/* all */
-			tclearregion(term, 0, 0, term->col - 1,
-				     term->row - 1, 1);
+			__tclearregion(term, ORIGIN, term->size, 1);
 			break;
 		default:
 			goto unknown;
@@ -1738,16 +1818,17 @@ static void csihandle(struct st_window *xw)
 	case 'K':		/* EL -- Clear line */
 		switch (csiescseq.arg[0]) {
 		case 0:	/* right */
-			tclearregion(term, term->c.x, term->c.y,
-				     term->col - 1, term->c.y, 1);
+			tclearregion(term, term->c.pos, (struct coord)
+				     {term->size.x - 1, term->c.pos.y}, 1);
 			break;
 		case 1:	/* left */
-			tclearregion(term, 0, term->c.y,
-				     term->c.x, term->c.y, 1);
+			tclearregion(term, (struct coord)
+				     {0, term->c.pos.y}, term->c.pos, 1);
 			break;
 		case 2:	/* all */
-			tclearregion(term, 0, term->c.y,
-				     term->col - 1, term->c.y, 1);
+			tclearregion(term, (struct coord) {0, term->c.pos.y},
+				     (struct coord)
+				     {term->size.x - 1, term->c.pos.y}, 1);
 			break;
 		}
 		break;
@@ -1772,8 +1853,8 @@ static void csihandle(struct st_window *xw)
 		break;
 	case 'X':		/* ECH -- Erase <n> char */
 		DEFAULT(csiescseq.arg[0], 1);
-		tclearregion(term, term->c.x, term->c.y,
-			     term->c.x + csiescseq.arg[0] - 1, term->c.y, 1);
+		tclearregion(term, term->c.pos, (struct coord)
+			     {term->c.pos.x + csiescseq.arg[0] - 1, term->c.pos.y}, 1);
 		break;
 	case 'P':		/* DCH -- Delete <n> char */
 		DEFAULT(csiescseq.arg[0], 1);
@@ -1786,7 +1867,7 @@ static void csihandle(struct st_window *xw)
 		break;
 	case 'd':		/* VPA -- Move to <row> */
 		DEFAULT(csiescseq.arg[0], 1);
-		tmoveato(term, term->c.x, csiescseq.arg[0] - 1);
+		tmoveato(term, (struct coord) {term->c.pos.x, csiescseq.arg[0] - 1});
 		break;
 	case 'h':		/* SM -- Set terminal mode */
 		tsetmode(xw, csiescseq.priv, 1, csiescseq.arg, csiescseq.narg);
@@ -1799,10 +1880,10 @@ static void csihandle(struct st_window *xw)
 			goto unknown;
 		} else {
 			DEFAULT(csiescseq.arg[0], 1);
-			DEFAULT(csiescseq.arg[1], term->row);
+			DEFAULT(csiescseq.arg[1], term->size.y);
 			tsetscroll(term, csiescseq.arg[0] - 1,
 				   csiescseq.arg[1] - 1);
-			tmoveato(term, 0, 0);
+			tmoveato(term, ORIGIN);
 		}
 		break;
 	case 's':		/* DECSC -- Save cursor position (ANSI.SYS) */
@@ -1980,10 +2061,10 @@ static void tputc(struct st_window *xw,
 			tputtab(term, 1);
 			return;
 		case '\b':	/* BS */
-			tmoveto(term, term->c.x - 1, term->c.y);
+			tmoverel(term, -1, 0);
 			return;
 		case '\r':	/* CR */
-			tmoveto(term, 0, term->c.y);
+			tmovex(term, 0);
 			return;
 		case '\f':	/* LF */
 		case '\v':	/* VT */
@@ -2055,13 +2136,12 @@ static void tputc(struct st_window *xw,
 		} else if (term->esc & ESC_TEST) {
 			if (ascii == '8') {	/* DEC screen alignment test. */
 				char E[UTF_SIZ] = "E";
-				int x, y;
+				struct coord p;
 
-				for (x = 0; x < term->col; ++x) {
-					for (y = 0; y < term->row; ++y)
+				for (p.x = 0; p.x < term->size.x; ++p.x)
+					for (p.y = 0; p.y < term->size.y; ++p.y)
 						tsetchar(term, E,
-							 &term->c.attr, x, y);
-				}
+							 &term->c.attr, p);
 			}
 			term->esc = 0;
 		} else {
@@ -2090,11 +2170,10 @@ static void tputc(struct st_window *xw,
 				term->esc = 0;
 				break;
 			case 'D':	/* IND -- Linefeed */
-				if (term->c.y == term->bot) {
+				if (term->c.pos.y == term->bot)
 					tscrollup(term, term->top, 1);
-				} else {
-					tmoveto(term, term->c.x, term->c.y + 1);
-				}
+				else
+					tmoverel(term, 0, 1);
 				term->esc = 0;
 				break;
 			case 'E':	/* NEL -- Next line */
@@ -2102,14 +2181,14 @@ static void tputc(struct st_window *xw,
 				term->esc = 0;
 				break;
 			case 'H':	/* HTS -- Horizontal tab stop */
-				term->tabs[term->c.x] = 1;
+				term->tabs[term->c.pos.x] = 1;
 				term->esc = 0;
 				break;
 			case 'M':	/* RI -- Reverse index */
-				if (term->c.y == term->top) {
+				if (term->c.pos.y == term->top) {
 					tscrolldown(term, term->top, 1);
 				} else {
-					tmoveto(term, term->c.x, term->c.y - 1);
+					tmoverel(term, 0, -1);
 				}
 				term->esc = 0;
 				break;
@@ -2162,20 +2241,20 @@ static void tputc(struct st_window *xw,
 		return;
 
 	if (term->sel.bx != -1 &&
-	    BETWEEN(term->c.y, term->sel.by, term->sel.ey))
+	    BETWEEN(term->c.pos.y, term->sel.by, term->sel.ey))
 		term->sel.bx = -1;
 
 	if (term->wrap && term->c.wrapnext)
 		tnewline(term, 1);	/* always go to first col */
 
-	if (term->insert && term->c.x + 1 < term->col)
-		memmove(&term->line[term->c.y][term->c.x + 1],
-			&term->line[term->c.y][term->c.x],
-			(term->col - term->c.x - 1) * sizeof(struct st_glyph));
+	if (term->insert && term->c.pos.x + 1 < term->size.x)
+		memmove(term_pos(term, term->c.pos) + 1,
+			term_pos(term, term->c.pos),
+			(term->size.x - term->c.pos.x - 1) * sizeof(struct st_glyph));
 
-	tsetchar(term, c, &term->c.attr, term->c.x, term->c.y);
-	if (term->c.x + 1 < term->col)
-		tmoveto(term, term->c.x + 1, term->c.y);
+	tsetchar(term, c, &term->c.attr, term->c.pos);
+	if (term->c.pos.x + 1 < term->size.x)
+		tmoverel(term, 1, 0);
 	else
 		term->c.wrapnext = 1;
 }
@@ -2332,20 +2411,20 @@ static void ttyread(struct st_window *xw)
 
 /* Mouse code */
 
-static int x2col(struct st_window *xw, int x)
+static int x2col(struct st_window *xw, unsigned x)
 {
 	x -= borderpx;
-	x /= xw->cw;
+	x /= xw->charsize.x;
 
-	return min(x, xw->term.col - 1);
+	return min(x, xw->term.size.x - 1);
 }
 
-static int y2row(struct st_window *xw, int y)
+static int y2row(struct st_window *xw, unsigned y)
 {
 	y -= borderpx;
-	y /= xw->ch;
+	y /= xw->charsize.y;
 
-	return min(y, xw->term.row - 1);
+	return min(y, xw->term.size.y - 1);
 }
 
 static void getbuttoninfo(struct st_window *xw, XEvent *ev)
@@ -2430,7 +2509,7 @@ static void bpress(struct st_window *xw, XEvent *ev)
 	} else if (ev->xbutton.button == Button1) {
 		if (sel->bx != -1) {
 			sel->bx = -1;
-			tsetdirt(&xw->term, sel->b.y, sel->e.y);
+			xw->term.dirty[sel->b.y] = 1;
 			draw(xw);
 		}
 		sel->mode = 1;
@@ -2469,7 +2548,7 @@ static void brelease(struct st_window *xw, XEvent *e)
 			    tripleclicktimeout) {
 				/* triple click on the line */
 				sel->b.x = sel->bx = 0;
-				sel->e.x = sel->ex = term->col;
+				sel->e.x = sel->ex = term->size.x;
 				sel->b.y = sel->e.y = sel->ey;
 				selcopy(xw);
 			} else if (TIMEDIFF(now, sel->tclick1) <=
@@ -2482,7 +2561,7 @@ static void brelease(struct st_window *xw, XEvent *e)
 				       != ' ')
 					sel->bx--;
 				sel->b.x = sel->bx;
-				while (sel->ex < term->col - 1 &&
+				while (sel->ex < term->size.x - 1 &&
 				       term->line[sel->ey][sel->ex + 1].set &&
 				       term->line[sel->ey][sel->ex + 1].c[0]
 				       != ' ')
@@ -2531,23 +2610,23 @@ static void ttyresize(struct st_window *xw)
 {
 	struct winsize w;
 
-	w.ws_row = xw->term.row;
-	w.ws_col = xw->term.col;
-	w.ws_xpixel = xw->tw;
-	w.ws_ypixel = xw->th;
+	w.ws_row = xw->term.size.y;
+	w.ws_col = xw->term.size.x;
+	w.ws_xpixel = xw->ttysize.x;
+	w.ws_ypixel = xw->ttysize.y;
 	if (ioctl(xw->term.cmdfd, TIOCSWINSZ, &w) < 0)
 		fprintf(stderr, "Couldn't set window size: %s\n", SERRNO);
 }
 
-static int tresize(struct st_term *term, int col, int row)
+static int tresize(struct st_term *term, struct coord size)
 {
-	int i, x;
-	int minrow = min(row, term->row);
-	int mincol = min(col, term->col);
-	int slide = term->c.y - row + 1;
+	unsigned i, x;
+	unsigned minrow = min(size.y, term->size.y);
+	unsigned mincol = min(size.x, term->size.x);
+	int slide = term->c.pos.y - size.y + 1;
 	bool *bp;
 
-	if (col < 1 || row < 1)
+	if (size.x < 1 || size.y < 1)
 		return 0;
 
 	/* free unneeded rows */
@@ -2563,98 +2642,97 @@ static int tresize(struct st_term *term, int col, int row)
 			free(term->alt[i]);
 		}
 		memmove(term->line, term->line + slide,
-			row * sizeof(struct st_glyph *));
+			size.y * sizeof(struct st_glyph *));
 		memmove(term->alt, term->alt + slide,
-			row * sizeof(struct st_glyph *));
+			size.y * sizeof(struct st_glyph *));
 	}
-	for (i += row; i < term->row; i++) {
+	for (i += size.y; i < term->size.y; i++) {
 		free(term->line[i]);
 		free(term->alt[i]);
 	}
 
 	/* resize to new height */
-	term->line = xrealloc(term->line, row * sizeof(struct st_glyph *));
-	term->alt = xrealloc(term->alt, row * sizeof(struct st_glyph *));
-	term->dirty = xrealloc(term->dirty, row * sizeof(*term->dirty));
-	term->tabs = xrealloc(term->tabs, col * sizeof(*term->tabs));
+	term->line = xrealloc(term->line, size.y * sizeof(struct st_glyph *));
+	term->alt = xrealloc(term->alt, size.y * sizeof(struct st_glyph *));
+	term->dirty = xrealloc(term->dirty, size.y * sizeof(*term->dirty));
+	term->tabs = xrealloc(term->tabs, size.x * sizeof(*term->tabs));
 
 	/* resize each row to new width, zero-pad if needed */
 	for (i = 0; i < minrow; i++) {
 		term->dirty[i] = 1;
-		term->line[i] = xrealloc(term->line[i], col * sizeof(struct st_glyph));
-		term->alt[i] = xrealloc(term->alt[i], col * sizeof(struct st_glyph));
-		for (x = mincol; x < col; x++) {
+		term->line[i] = xrealloc(term->line[i], size.x * sizeof(struct st_glyph));
+		term->alt[i] = xrealloc(term->alt[i], size.x * sizeof(struct st_glyph));
+		for (x = mincol; x < size.x ; x++) {
 			term->line[i][x].set = 0;
 			term->alt[i][x].set = 0;
 		}
 	}
 
 	/* allocate any new rows */
-	for ( /* i == minrow */ ; i < row; i++) {
+	for ( /* i == minrow */ ; i < size.y; i++) {
 		term->dirty[i] = 1;
-		term->line[i] = xcalloc(col, sizeof(struct st_glyph));
-		term->alt[i] = xcalloc(col, sizeof(struct st_glyph));
+		term->line[i] = xcalloc(size.x, sizeof(struct st_glyph));
+		term->alt[i] = xcalloc(size.x, sizeof(struct st_glyph));
 	}
-	if (col > term->col) {
-		bp = term->tabs + term->col;
+	if (size.x > term->size.x) {
+		bp = term->tabs + term->size.x;
 
-		memset(bp, 0, sizeof(*term->tabs) * (col - term->col));
+		memset(bp, 0, sizeof(*term->tabs) * (size.x - term->size.x));
 		while (--bp > term->tabs && !*bp)
 			/* nothing */ ;
-		for (bp += tabspaces; bp < term->tabs + col;
+		for (bp += tabspaces; bp < term->tabs + size.x;
 		     bp += tabspaces)
 			*bp = 1;
 	}
 	/* update terminal size */
-	term->col = col;
-	term->row = row;
+	term->size = size;
 	/* reset scrolling region */
-	tsetscroll(term, 0, row - 1);
+	tsetscroll(term, 0, size.y - 1);
 	/* make use of the LIMIT in tmoveto */
-	tmoveto(term, term->c.x, term->c.y);
+	tmoveto(term, term->c.pos);
 
 	return (slide > 0);
 }
 
 static void xresize(struct st_window *xw, int col, int row)
 {
-	xw->tw = max(1, col * xw->cw);
-	xw->th = max(1, row * xw->ch);
+	xw->ttysize.x = max(1U, col * xw->charsize.x);
+	xw->ttysize.y = max(1U, row * xw->charsize.y);
 
 	XFreePixmap(xw->dpy, xw->buf);
 	xw->buf = XCreatePixmap(xw->dpy, xw->win,
-				   xw->w, xw->h,
-				   DefaultDepth(xw->dpy, xw->scr));
+				xw->winsize.x, xw->winsize.y,
+				DefaultDepth(xw->dpy, xw->scr));
 	XSetForeground(xw->dpy, xw->gc,
 		       xw->col[xw->term.reverse ? defaultfg : defaultbg].
 		       pixel);
 	XFillRectangle(xw->dpy, xw->buf, xw->gc, 0, 0,
-		       xw->w, xw->h);
+		       xw->winsize.x, xw->winsize.y);
 
 	XftDrawChange(xw->draw, xw->buf);
 }
 
-static void cresize(struct st_window *xw, int width, int height)
+static void cresize(struct st_window *xw, unsigned width, unsigned height)
 {
-	int col, row;
+	struct coord size;
 
 	if (width != 0)
-		xw->w = width;
+		xw->winsize.x = width;
 	if (height != 0)
-		xw->h = height;
+		xw->winsize.y = height;
 
-	col = (xw->w - 2 * borderpx) / xw->cw;
-	row = (xw->h - 2 * borderpx) / xw->ch;
+	size.x = (xw->winsize.x - 2 * borderpx) / xw->charsize.x;
+	size.y = (xw->winsize.y - 2 * borderpx) / xw->charsize.y;
 
-	tresize(&xw->term, col, row);
-	xresize(xw, col, row);
+	tresize(&xw->term, size);
+	xresize(xw, size.x, size.y);
 	ttyresize(xw);
 }
 
 static void resize(struct st_window *xw, XEvent *ev)
 {
-	if (ev->xconfigure.width == xw->w &&
-	    ev->xconfigure.height == xw->h)
+	if (ev->xconfigure.width == xw->winsize.x &&
+	    ev->xconfigure.height == xw->winsize.y)
 		return;
 
 	cresize(xw, ev->xconfigure.width, ev->xconfigure.height);
@@ -2665,7 +2743,7 @@ static void resize(struct st_window *xw, XEvent *ev)
 static void ttynew(struct st_window *xw)
 {
 	int m, s;
-	struct winsize w = { xw->term.row, xw->term.col, 0, 0 };
+	struct winsize w = { xw->term.size.y, xw->term.size.x, 0, 0 };
 
 	/* seems to work fine on linux, openbsd and freebsd */
 	if (openpty(&m, &s, NULL, NULL, &w) < 0)
@@ -2705,21 +2783,21 @@ static void ttynew(struct st_window *xw)
 static void tnew(struct st_term *term, int col, int row)
 {
 	/* set screen size */
-	term->row = row;
-	term->col = col;
-	term->line = xmalloc(term->row * sizeof(struct st_glyph *));
-	term->alt = xmalloc(term->row * sizeof(struct st_glyph *));
-	term->dirty = xmalloc(term->row * sizeof(*term->dirty));
-	term->tabs = xmalloc(term->col * sizeof(*term->tabs));
+	term->size.y = row;
+	term->size.x = col;
+	term->line = xmalloc(term->size.y * sizeof(struct st_glyph *));
+	term->alt = xmalloc(term->size.y * sizeof(struct st_glyph *));
+	term->dirty = xmalloc(term->size.y * sizeof(*term->dirty));
+	term->tabs = xmalloc(term->size.x * sizeof(*term->tabs));
 
-	for (row = 0; row < term->row; row++) {
-		term->line[row] = xmalloc(term->col * sizeof(struct st_glyph));
-		term->alt[row] = xmalloc(term->col * sizeof(struct st_glyph));
+	for (row = 0; row < term->size.y; row++) {
+		term->line[row] = xmalloc(term->size.x * sizeof(struct st_glyph));
+		term->alt[row] = xmalloc(term->size.x * sizeof(struct st_glyph));
 		term->dirty[row] = 0;
 	}
 
 	term->numlock = 1;
-	memset(term->tabs, 0, term->col * sizeof(*term->tabs));
+	memset(term->tabs, 0, term->size.x * sizeof(*term->tabs));
 	/* setup screen */
 	treset(term);
 }
@@ -2732,7 +2810,7 @@ static void selinit(struct st_window *xw)
 		xw->term.sel.xtarget = XA_STRING;
 }
 
-static void xloadcols(struct st_window *xw)
+static void xloadcolors(struct st_window *xw)
 {
 	int i, r, g, b;
 	XRenderColor color = {.alpha = 0xffff };
@@ -2779,16 +2857,16 @@ static void xhints(struct st_window *xw)
 	sizeh = XAllocSizeHints();
 	if (xw->isfixed == False) {
 		sizeh->flags = PSize | PResizeInc | PBaseSize;
-		sizeh->height = xw->h;
-		sizeh->width = xw->w;
-		sizeh->height_inc = xw->ch;
-		sizeh->width_inc = xw->cw;
+		sizeh->width = xw->winsize.x;
+		sizeh->height = xw->winsize.y;
+		sizeh->width_inc = xw->charsize.x;
+		sizeh->height_inc = xw->charsize.y;
 		sizeh->base_height = 2 * borderpx;
 		sizeh->base_width = 2 * borderpx;
 	} else {
 		sizeh->flags = PMaxSize | PMinSize;
-		sizeh->min_width = sizeh->max_width = xw->fw;
-		sizeh->min_height = sizeh->max_height = xw->fh;
+		sizeh->min_width = sizeh->max_width = xw->fixedsize.x;
+		sizeh->min_height = sizeh->max_height = xw->fixedsize.y;
 	}
 
 	XSetWMProperties(xw->dpy, xw->win, NULL, NULL, NULL,
@@ -2873,8 +2951,8 @@ static void xloadfonts(struct st_window *xw,
 		die("st: can't open font %s\n", fontstr);
 
 	/* Setting character width and height. */
-	xw->cw = xw->font.width;
-	xw->ch = xw->font.height;
+	xw->charsize.x = xw->font.width;
+	xw->charsize.y = xw->font.height;
 
 	FcPatternDel(pattern, FC_SLANT);
 	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ITALIC);
@@ -2954,25 +3032,24 @@ static void xinit(struct st_window *xw)
 
 	/* colors */
 	xw->cmap = XDefaultColormap(xw->dpy, xw->scr);
-	xloadcols(xw);
+	xloadcolors(xw);
 
 	/* adjust fixed window geometry */
 	if (xw->isfixed) {
 		sw = DisplayWidth(xw->dpy, xw->scr);
 		sh = DisplayHeight(xw->dpy, xw->scr);
 		if (xw->fx < 0)
-			xw->fx = sw + xw->fx - xw->fw - 1;
+			xw->fx = sw + xw->fx - xw->fixedsize.x - 1;
 		if (xw->fy < 0)
-			xw->fy = sh + xw->fy - xw->fh - 1;
+			xw->fy = sh + xw->fy - xw->fixedsize.y - 1;
 
-		xw->h = xw->fh;
-		xw->w = xw->fw;
+		xw->winsize = xw->fixedsize;
 	} else {
 		/* window - default size */
-		xw->h = 2 * borderpx + xw->term.row * xw->ch;
-		xw->w = 2 * borderpx + xw->term.col * xw->cw;
-		xw->fx = 0;
-		xw->fy = 0;
+		xw->winsize.x = 2 * borderpx + xw->term.size.x * xw->charsize.x;
+		xw->winsize.y = 2 * borderpx + xw->term.size.y * xw->charsize.y;
+		xw->fixedsize.x = 0;
+		xw->fixedsize.y = 0;
 	}
 
 	/* Events */
@@ -2987,20 +3064,20 @@ static void xinit(struct st_window *xw)
 	parent = xw->embed ? strtol(xw->embed, NULL, 0) :
 	    XRootWindow(xw->dpy, xw->scr);
 	xw->win = XCreateWindow(xw->dpy, parent, xw->fx, xw->fy,
-				   xw->w, xw->h, 0,
-				   XDefaultDepth(xw->dpy, xw->scr),
-				   InputOutput, xw->vis,
-				   CWBackPixel | CWBorderPixel | CWBitGravity |
-				   CWEventMask | CWColormap, &attrs);
+				xw->winsize.x, xw->winsize.y, 0,
+				XDefaultDepth(xw->dpy, xw->scr),
+				InputOutput, xw->vis,
+				CWBackPixel | CWBorderPixel | CWBitGravity |
+				CWEventMask | CWColormap, &attrs);
 
 	memset(&gcvalues, 0, sizeof(gcvalues));
 	gcvalues.graphics_exposures = False;
 	xw->gc = XCreateGC(xw->dpy, parent, GCGraphicsExposures, &gcvalues);
-	xw->buf = XCreatePixmap(xw->dpy, xw->win, xw->w, xw->h,
-				   DefaultDepth(xw->dpy, xw->scr));
+	xw->buf = XCreatePixmap(xw->dpy, xw->win, xw->winsize.x, xw->winsize.y,
+				DefaultDepth(xw->dpy, xw->scr));
 	XSetForeground(xw->dpy, xw->gc, xw->col[defaultbg].pixel);
-	XFillRectangle(xw->dpy, xw->buf, xw->gc,
-		       0, 0, xw->w, xw->h);
+	XFillRectangle(xw->dpy, xw->buf, xw->gc, 0, 0,
+		       xw->winsize.x, xw->winsize.y);
 
 	/* Xft rendering context */
 	xw->draw = XftDrawCreate(xw->dpy, xw->buf,
@@ -3217,15 +3294,15 @@ int main(int argc, char *argv[])
 			if (bitm & YValue)
 				xw.fy = yr;
 			if (bitm & WidthValue)
-				xw.fw = (int) wr;
+				xw.fixedsize.x = (int) wr;
 			if (bitm & HeightValue)
-				xw.fh = (int) hr;
+				xw.fixedsize.y = (int) hr;
 			if (bitm & XNegative && xw.fx == 0)
 				xw.fx = -1;
 			if (bitm & XNegative && xw.fy == 0)
 				xw.fy = -1;
 
-			if (xw.fh != 0 && xw.fw != 0)
+			if (xw.fixedsize.x != 0 && xw.fixedsize.y != 0)
 				xw.isfixed = True;
 			break;
 		case 'o':
