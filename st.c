@@ -1404,10 +1404,9 @@ static void tnewline(struct st_term *term, int first_col)
 	tmoveto(term, pos);
 }
 
-static void tsetchar(struct st_term *term, char *c,
-		     struct st_glyph *attr, struct coord pos)
+static void tsetchar(struct st_term *term, const char *c, struct coord pos)
 {
-	static char *vt100_0[62] = {	/* 0x41 - 0x7e */
+	static const char *vt100_0[62] = {	/* 0x41 - 0x7e */
 		"↑", "↓", "→", "←", "█", "▚", "☃",	/* A - G */
 		0, 0, 0, 0, 0, 0, 0, 0,	/* H - O */
 		0, 0, 0, 0, 0, 0, 0, 0,	/* P - W */
@@ -1423,12 +1422,12 @@ static void tsetchar(struct st_term *term, char *c,
 	/*
 	 * The table is proudly stolen from rxvt.
 	 */
-	if (attr->gfx)
+	if (term->c.attr.gfx)
 		if (c[0] >= 0x41 && c[0] <= 0x7e && vt100_0[c[0] - 0x41])
 			c = vt100_0[c[0] - 0x41];
 
 	term->dirty[pos.y] = 1;
-	*g = *attr;
+	*g = term->c.attr;
 	memcpy(g->c, c, UTF_SIZ);
 	g->set = 1;
 }
@@ -2136,8 +2135,7 @@ static void tputc(struct st_window *xw,
 
 				for (p.x = 0; p.x < term->size.x; ++p.x)
 					for (p.y = 0; p.y < term->size.y; ++p.y)
-						tsetchar(term, E,
-							 &term->c.attr, p);
+						tsetchar(term, E, p);
 			}
 			term->esc = 0;
 		} else {
@@ -2248,7 +2246,7 @@ static void tputc(struct st_window *xw,
 			term_pos(term, term->c.pos),
 			(term->size.x - term->c.pos.x - 1) * sizeof(struct st_glyph));
 
-	tsetchar(term, c, &term->c.attr, term->c.pos);
+	tsetchar(term, c, term->c.pos);
 	if (term->c.pos.x + 1 < term->size.x)
 		tmoverel(term, 1, 0);
 	else
