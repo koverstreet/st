@@ -37,8 +37,6 @@
 #define XK_NO_MOD     0
 #define XK_SWITCH_MOD (1<<13)
 
-#define REDRAW_TIMEOUT (80*1000)	/* 80 ms */
-
 /* macros */
 #define TIMEDIFF(t1, t2) ((t1.tv_sec-t2.tv_sec)*1000 + (t1.tv_usec-t2.tv_usec)/1000)
 
@@ -128,7 +126,6 @@ struct st_window {
 	struct coord	mousepos;
 	unsigned	mousebutton;
 	unsigned	visible:1;
-	unsigned	redraw:1;
 	unsigned	focused:1;
 };
 
@@ -139,7 +136,7 @@ static unsigned short sixd_to_16bit(int x)
 	return x == 0 ? 0 : 0x3737 + 0x2828 * x;
 }
 
-static bool match(unsigned mask, uint state)
+static bool match(unsigned mask, unsigned state)
 {
 	state &= ~(ignoremod);
 
@@ -622,20 +619,10 @@ static void draw(struct st_window *xw)
 		  0, 0, xw->winsize.x, xw->winsize.y, 0, 0);
 	XSetForeground(xw->dpy, xw->gc,
 		       xw->col[xw->term.reverse ? defaultfg : defaultbg].pixel);
+	XFlush(xw->dpy);
 }
 
-static void redraw(struct st_window *xw, int timeout)
-{
-	struct timespec tv = { 0, timeout * 1000 };
-
-	tfulldirt(&xw->term);
-	draw(xw);
-
-	if (timeout > 0) {
-		nanosleep(&tv, NULL); /* XXX !?!?!? */
-		XSync(xw->dpy, False);	/* necessary for a good tput flash */
-	}
-}
+/* Keyboard input */
 
 static char *kmap(struct st_term *term, KeySym k, unsigned state)
 {
@@ -691,7 +678,7 @@ static void kpress(struct st_window *xw, XEvent *ev)
 	char xstr[31], buf[32], *customkey, *cp = buf;
 	int len;
 	Status status;
-	struct st_shortcut *bp;
+	const struct st_shortcut *bp;
 
 	if (xw->term.kbdlock)
 		return;
@@ -834,7 +821,7 @@ static void bpress(struct st_window *xw, XEvent *ev)
 		if (sel->bx != -1) {
 			sel->bx = -1;
 			xw->term.dirty[sel->b.y] = 1;
-			draw(xw);
+			tfulldirt(&xw->term); // XXX
 		}
 		sel->mode = 1;
 		sel->type = SEL_REGULAR;
@@ -1064,7 +1051,7 @@ static int xloadfont(struct st_window *xw, struct st_font *f,
 	return 0;
 }
 
-static void xloadfonts(struct st_window *xw, char *fontstr, int fontsize)
+static void xloadfonts(struct st_window *xw, const char *fontstr, int fontsize)
 {
 	FcPattern *pattern;
 	FcResult result;
@@ -1157,7 +1144,7 @@ static void xzoom(struct st_window *xw, const union st_arg *arg)
 	xunloadfonts(xw);
 	xloadfonts(xw, xw->fontname, xw->fontsize + arg->i);
 	cresize(xw, 0, 0);
-	redraw(xw, 0);
+	tfulldirt(&xw->term);
 }
 
 static void xinit(struct st_window *xw)
@@ -1275,11 +1262,7 @@ static void xinit(struct st_window *xw)
 
 static void expose(struct st_window *xw, XEvent *ev)
 {
-	XExposeEvent *e = &ev->xexpose;
-
-	if (xw->redraw && !e->count)
-		xw->redraw = 0;
-	redraw(xw, 0);
+	tfulldirt(&xw->term);
 }
 
 static void visibility(struct st_window *xw, XEvent *ev)
@@ -1291,7 +1274,6 @@ static void visibility(struct st_window *xw, XEvent *ev)
 	} else if (!xw->visible) {
 		/* need a full redraw for next Expose, not just a buf copy */
 		xw->visible = 1;
-		xw->redraw = 1;
 	}
 }
 
@@ -1347,10 +1329,10 @@ static void run(struct st_window *xw)
 {
 	XEvent ev;
 	fd_set rfd;
-	int xfd = XConnectionNumber(xw->dpy), xev = actionfps;
-	struct timeval drawtimeout, *tv = NULL, now, last;
+	int xfd = XConnectionNumber(xw->dpy);
+	struct timeval now, next_redraw, timeout, *tv = NULL;
 
-	void (*handler[LASTEvent]) (struct st_window *, XEvent *) = {
+	void (*handler[]) (struct st_window *, XEvent *) = {
 		[KeyPress] = kpress,
 		[ClientMessage] = cmessage,
 		[ConfigureNotify] = resize,
@@ -1366,47 +1348,50 @@ static void run(struct st_window *xw)
 		[SelectionNotify] = selnotify,
 		[SelectionRequest] = selrequest,};
 
-	gettimeofday(&last, NULL);
+	gettimeofday(&next_redraw, NULL);
 
 	while (1) {
 		FD_ZERO(&rfd);
 		FD_SET(xw->term.cmdfd, &rfd);
 		FD_SET(xfd, &rfd);
-		if (select(max(xfd, xw->term.cmdfd) + 1, &rfd, NULL, NULL, tv) < 0) {
+
+		if (select(max(xfd, xw->term.cmdfd) + 1,
+			   &rfd, NULL, NULL, tv) < 0) {
 			if (errno == EINTR)
 				continue;
 			edie("select failed");
 		}
 
-		gettimeofday(&now, NULL);
-		drawtimeout.tv_sec = 0;
-		drawtimeout.tv_usec = (1000 / xfps) * 1000;
-		tv = &drawtimeout;
-
 		if (FD_ISSET(xw->term.cmdfd, &rfd))
 			term_read(&xw->term);
 
-		if (FD_ISSET(xfd, &rfd))
-			xev = actionfps;
+		while (XPending(xw->dpy)) {
+			XNextEvent(xw->dpy, &ev);
+			if (XFilterEvent(&ev, None))
+				continue;
 
-		if (TIMEDIFF(now, last) >
-		    (xev ? (1000 / xfps) : (1000 / actionfps))) {
-			while (XPending(xw->dpy)) {
-				XNextEvent(xw->dpy, &ev);
-				if (XFilterEvent(&ev, None))
-					continue;
-				if (handler[ev.type])
-					(handler[ev.type])(xw, &ev);
-			}
+			if (ev.type < ARRAY_SIZE(handler) &&
+			    handler[ev.type])
+				(handler[ev.type])(xw, &ev);
+		}
 
+		gettimeofday(&now, NULL);
+
+		timeout.tv_sec = next_redraw.tv_sec - now.tv_sec;
+		timeout.tv_usec = next_redraw.tv_usec - now.tv_usec;
+
+		while (timeout.tv_usec < 0) {
+			timeout.tv_usec += 1000000;
+			timeout.tv_sec--;
+		}
+
+		if (timeout.tv_sec < 0) {
 			draw(xw);
-			XFlush(xw->dpy);
-			last = now;
-
-			if (xev && !FD_ISSET(xfd, &rfd))
-				xev--;
-			if (!FD_ISSET(xw->term.cmdfd, &rfd) && !FD_ISSET(xfd, &rfd))
-				tv = NULL;
+			next_redraw = now;
+			next_redraw.tv_usec += 1000 * 1000 / xfps;
+			tv = NULL;
+		} else {
+			tv = &timeout;
 		}
 	}
 }
