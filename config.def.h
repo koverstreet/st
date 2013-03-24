@@ -17,12 +17,6 @@ static unsigned int tripleclicktimeout = 600;
 static unsigned int xfps = 60;
 static unsigned int actionfps = 30;
 
-/* TERM value */
-static char termname[] = "st-256color";
-
-static unsigned int tabspaces = 8;
-
-
 /* Terminal colors (16 first used in escape sequence) */
 static const char *colorname[] = {
 	/* 8 normal colors */
