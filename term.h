@@ -96,7 +96,6 @@ struct st_glyph {
 		unsigned	gfx:1;
 		unsigned	italic:1;
 		unsigned	blink:1;
-		unsigned	set:1;
 	};
 	};
 };

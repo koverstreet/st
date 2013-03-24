@@ -104,7 +104,7 @@ void term_selcopy(struct st_term *term)
 			gp = &term->line[y][0];
 			last = gp + term->size.y;
 
-			while (--last >= gp && !last->set)
+			while (--last >= gp && !last->c)
 				/* nothing */ ;
 
 			for (x = 0; gp <= last; x++, ++gp) {
@@ -114,7 +114,7 @@ void term_selcopy(struct st_term *term)
 					is_selected = 1;
 				}
 
-				if (gp->set)
+				if (gp->c)
 					ptr += FcUcs4ToUtf8(gp->c, ptr);
 				else
 					*(ptr++) = ' ';
@@ -199,11 +199,8 @@ static void __tclearline(struct st_term *term, unsigned y,
 
 	for (g = &term->line[y][start];
 	     g < &term->line[y][end];
-	     g++) {
+	     g++)
 		*g = term->c.attr;
-		g->c = 0;
-		g->set = 1;
-	}
 }
 
 static void tclearline(struct st_term *term, unsigned start, unsigned end)
@@ -406,7 +403,6 @@ static void tsetchar(struct st_term *term, unsigned c, struct coord pos)
 	term->dirty[pos.y] = 1;
 	*g = term->c.attr;
 	g->c = c;
-	g->set = 1;
 }
 
 static void tdeletechar(struct st_term *term, int n)
@@ -1346,8 +1342,8 @@ void term_resize(struct st_term *term, struct coord size)
 		term->line[i] = xrealloc(term->line[i], size.x * sizeof(struct st_glyph));
 		term->alt[i] = xrealloc(term->alt[i], size.x * sizeof(struct st_glyph));
 		for (x = mincol; x < size.x ; x++) {
-			term->line[i][x].set = 0;
-			term->alt[i][x].set = 0;
+			term->line[i][x] = term->c.attr;
+			term->alt[i][x] = term->c.attr;
 		}
 	}
 

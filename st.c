@@ -320,17 +320,6 @@ static void selrequest(struct st_window *xw, XEvent *e)
 
 /* Screen drawing code */
 
-static void xtermclear(struct st_window *xw,
-		       int col1, int row1, int col2, int row2)
-{
-	XftDrawRect(xw->draw,
-		    &xw->col[xw->term.reverse ? defaultfg : defaultbg],
-		    borderpx + col1 * xw->charsize.x,
-		    borderpx + row1 * xw->charsize.y,
-		    (col2 - col1 + 1) * xw->charsize.x,
-		    (row2 - row1 + 1) * xw->charsize.y);
-}
-
 static void xclear(struct st_window *xw, XftColor *color,
 		   struct coord pos, unsigned charlen)
 {
@@ -522,7 +511,6 @@ retry:
 
 		if (!found) {
 			xfont = find_font(xw, font, ucs, frcflags);
-
 			if (!xfont) {
 				if (ucs != 0xFFFD)
 					ucs = 0xFFFD;
@@ -551,7 +539,7 @@ retry:
 
 static void xdrawcursor(struct st_window *xw)
 {
-	struct st_glyph g, *p, *old;
+	struct st_glyph g, *p;
 
 	g.c = ' ';
 	g.cmp = 0;
@@ -563,18 +551,12 @@ static void xdrawcursor(struct st_window *xw)
 
 	p = term_pos(&xw->term, xw->term.c.pos);
 
-	if (p->set)
-		g.c = p->c;
+	g.c = p->c;
 
 	/* remove the old cursor */
-	old = term_pos(&xw->term, xw->term.oldcursor);
-	if (old->set) {
-		xdraw_glyphs(xw, xw->term.oldcursor, *old, old, 1);
-	} else {
-		xtermclear(xw,
-			   xw->term.oldcursor.x, xw->term.oldcursor.y,
-			   xw->term.oldcursor.x, xw->term.oldcursor.y);
-	}
+	xdraw_glyphs(xw, xw->term.oldcursor,
+		     *term_pos(&xw->term, xw->term.oldcursor),
+		     term_pos(&xw->term, xw->term.oldcursor), 1);
 
 	/* draw the new one */
 	if (!xw->term.hide) {
@@ -610,7 +592,6 @@ static void drawregion(struct st_window *xw,
 		if (!xw->term.dirty[y])
 			continue;
 
-		xtermclear(xw, 0, y, xw->term.size.x, y);
 		xw->term.dirty[y] = 0;
 		base = xw->term.line[y][0];
 		ic = ib = ox = 0;
@@ -623,14 +604,12 @@ static void drawregion(struct st_window *xw,
 					     base, &xw->term.line[y][ox], ic);
 				ic = 0;
 			}
-			if (new.set) {
-				if (ic == 0) {
-					ox = x;
-					base = new;
-				}
-
-				++ic;
+			if (ic == 0) {
+				ox = x;
+				base = new;
 			}
+
+			++ic;
 		}
 		if (ic > 0)
 			xdraw_glyphs(xw, (struct coord) {ox, y},
@@ -905,13 +884,11 @@ static void brelease(struct st_window *xw, XEvent *e)
 				/* double click to select word */
 				sel->bx = sel->ex;
 				while (sel->bx > 0 &&
-				       term->line[sel->ey][sel->bx - 1].set &&
-				       term->line[sel->ey][sel->bx - 1].c != ' ')
+				       isalpha(term->line[sel->ey][sel->bx - 1].c))
 					sel->bx--;
 				sel->b.x = sel->bx;
 				while (sel->ex < term->size.x - 1 &&
-				       term->line[sel->ey][sel->ex + 1].set &&
-				       term->line[sel->ey][sel->ex + 1].c != ' ')
+				       isalpha(term->line[sel->ey][sel->ex + 1].c))
 					sel->ex++;
 				sel->e.x = sel->ex;
 				sel->b.y = sel->e.y = sel->ey;
