@@ -749,15 +749,32 @@ static void xtermclear(struct st_window *xw,
 		    (row2 - row1 + 1) * xw->charsize.y);
 }
 
-/*
- * Absolute coordinates.
- */
-static void xclear(struct st_window *xw,
-		   int x1, int y1, int x2, int y2)
+static void xclear(struct st_window *xw, XftColor *color,
+		   struct coord pos, unsigned charlen)
 {
-	XftDrawRect(xw->draw,
-		    &xw->col[xw->term.reverse ? defaultfg : defaultbg],
-		    x1, y1, x2 - x1, y2 - y1);
+	unsigned x1 = borderpx + pos.x * xw->charsize.x;
+	unsigned y1 = borderpx + pos.y * xw->charsize.y;
+	unsigned x2 = xw->charsize.x * charlen, y2 = xw->charsize.y;
+
+	/* Get borders if we're clearing adjacent to them */
+	if (!pos.x) {
+		x2 += x1;
+		x1 = 0;
+	}
+
+	if (pos.x + charlen == xw->term.size.x)
+		x2 = xw->winsize.x - x1;
+
+	if (!pos.y) {
+		y2 += y1;
+		y1 = 0;
+	}
+
+	if (pos.y + 1 == xw->term.size.y)
+		y2 = xw->winsize.y - y1;
+
+	/* Clean up the region we want to draw to. */
+	XftDrawRect(xw->draw, color, x1, y1, x2, y2);
 }
 
 static XftColor *reverse_color(struct st_window *xw, XftColor *color,
@@ -894,25 +911,7 @@ static void xdraws(struct st_window *xw,
 	if (base.reverse)
 		swap(bg, fg);
 
-	/* Intelligent cleaning up of the borders. */
-	if (pos.x == 0)
-		xclear(xw, 0, (pos.y == 0) ? 0 : winy, borderpx,
-		       winy + xw->charsize.y +
-		       ((pos.y >= xw->term.size.y - 1) ? xw->winsize.y : 0));
-
-	if (pos.x + charlen >= xw->term.size.x)
-		xclear(xw, winx + width, (pos.y == 0)
-		       ? 0 : winy, xw->winsize.x,
-		       ((pos.y >= xw->term.size.y - 1)
-			? xw->winsize.y : (winy + xw->charsize.y)));
-
-	if (pos.y == 0)
-		xclear(xw, winx, 0, winx + width, borderpx);
-	if (pos.y == xw->term.size.y - 1)
-		xclear(xw, winx, winy + xw->charsize.y, winx + width, xw->winsize.y);
-
-	/* Clean up the region we want to draw to. */
-	XftDrawRect(xw->draw, bg, winx, winy, width, xw->charsize.y);
+	xclear(xw, bg, pos, charlen);
 
 	for (int xp = winx; bytelen > 0;) {
 		/*
