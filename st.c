@@ -114,7 +114,7 @@ enum selection_type {
 };
 
 struct st_glyph {
-	char		c[UTF_SIZ];	/* character code */
+	unsigned	c;		/* character code */
 	union {
 	unsigned	cmp;
 	struct {
@@ -420,12 +420,6 @@ static void *xcalloc(size_t nmemb, size_t size)
 	return p;
 }
 
-static int utf8size(char *s)
-{
-	unsigned ucs;
-	return FcUtf8ToUcs4((unsigned char *) s, &ucs, UTF_SIZ);
-}
-
 static unsigned short sixd_to_16bit(int x)
 {
 	return x == 0 ? 0 : 0x3737 + 0x2828 * x;
@@ -570,8 +564,8 @@ static bool selected(struct st_selection *sel, int x, int y)
 static void selcopy(struct st_window *xw)
 {
 	struct st_term *term = &xw->term;
-	char *str, *ptr, *p;
-	int x, y, bufsize, is_selected = 0, size;
+	unsigned char *str, *ptr;
+	int x, y, bufsize, is_selected = 0;
 	struct st_glyph *gp, *last;
 
 	if (term->sel.bx == -1) {
@@ -597,10 +591,10 @@ static void selcopy(struct st_window *xw)
 					is_selected = 1;
 				}
 
-				p = gp->set ? gp->c : " ";
-				size = utf8size(p);
-				memcpy(ptr, p, size);
-				ptr += size;
+				if (gp->set)
+					ptr += FcUcs4ToUtf8(gp->c, ptr);
+				else
+					*(ptr++) = ' ';
 			}
 			/* \n at the end of every selected line except for the last one */
 			if (is_selected && y < term->sel.e.y)
@@ -610,7 +604,7 @@ static void selcopy(struct st_window *xw)
 	}
 
 	free(term->sel.clip);
-	term->sel.clip = str;
+	term->sel.clip = (char *) str;
 	xsetsel(xw);
 }
 
@@ -855,20 +849,18 @@ static XftFont *find_font(struct st_window *xw,
 	return xfont;
 }
 
-static void xdraws(struct st_window *xw,
-		   char *s, struct st_glyph base,
-		   struct coord pos,
-		   int charlen, int bytelen)
+static void xdraw_glyphs(struct st_window *xw, struct coord pos,
+			 struct st_glyph base, struct st_glyph *glyphs,
+			 unsigned charlen)
 {
-	int winx = borderpx + pos.x * xw->charsize.x;
-	int winy = borderpx + pos.y * xw->charsize.y;
-	int width = charlen * xw->charsize.x;
-	int frcflags;
+	unsigned winx = borderpx + pos.x * xw->charsize.x, xp = winx;
+	unsigned winy = borderpx + pos.y * xw->charsize.y;
+	unsigned frcflags = FRC_NORMAL;
 	struct st_font *font = &xw->font;
-	XftColor *fg = &xw->col[base.fg], *bg = &xw->col[base.bg],
-	    revfg, revbg;
-
-	frcflags = FRC_NORMAL;
+	unsigned xglyphs[1024], nxglyphs = 0;
+	XftColor *fg = &xw->col[base.fg];
+	XftColor *bg = &xw->col[base.bg];
+	XftColor revfg, revbg;
 
 	if (base.bold) {
 		if (BETWEEN(base.fg, 0, 7)) {
@@ -913,66 +905,57 @@ static void xdraws(struct st_window *xw,
 
 	xclear(xw, bg, pos, charlen);
 
-	for (int xp = winx; bytelen > 0;) {
+	for (unsigned i = 0; i < charlen; i++) {
 		/*
 		 * Search for the range in the to be printed string of glyphs
 		 * that are in the main font. Then print that range. If
 		 * some glyph is found that is not in the font, do the
 		 * fallback dance.
 		 */
-		unsigned u8char;
-		char *u8c, *u8fs = s;
-		int u8cblen, doesexist;
-		int u8fblen = 0, u8fl = 0;
-		XftFont *xfont;
+		XftFont *xfont = font->match;
+		bool found;
+		unsigned ucs = glyphs[i].c;
+retry:
+		xglyphs[nxglyphs] = XftCharIndex(xw->dpy, xfont, ucs);
+		found = xglyphs[nxglyphs];
 
-		for (;;) {
-			u8c = s;
-			u8cblen = FcUtf8ToUcs4((unsigned char *) s,
-					       &u8char, UTF_SIZ);
-			s += u8cblen;
-			bytelen -= u8cblen;
+		if (found)
+			nxglyphs++;
 
-			doesexist =
-			    XftCharIndex(xw->dpy, font->match, u8char);
-			if (!doesexist || bytelen <= 0) {
-				if (bytelen <= 0) {
-					if (doesexist) {
-						u8fl++;
-						u8fblen += u8cblen;
-					}
-				}
+		if ((!found && nxglyphs) || nxglyphs == ARRAY_SIZE(xglyphs)) {
+			XftDrawGlyphs(xw->draw, fg, xfont, xp,
+				      winy + xfont->ascent, xglyphs, nxglyphs);
+			xp += xw->charsize.x * nxglyphs;
+			nxglyphs = 0;
+		}
 
-				if (u8fl > 0) {
-					XftDrawStringUtf8(xw->draw, fg,
-							  font->match, xp,
-							  winy +
-							  font->match->ascent,
-							  (FcChar8 *) u8fs,
-							  u8fblen);
-					xp += xw->charsize.x * u8fl;
-				}
-				break;
+		if (!found) {
+			xfont = find_font(xw, font, ucs, frcflags);
+
+			if (!xfont) {
+				if (ucs != 0xFFFD)
+					ucs = 0xFFFD;
+				else
+					ucs = ' ';
+				goto retry;
 			}
 
-			u8fl++;
-			u8fblen += u8cblen;
+			xglyphs[nxglyphs] = XftCharIndex(xw->dpy, xfont, ucs);
+
+			XftDrawGlyphs(xw->draw, fg, xfont, xp,
+				      winy + xfont->ascent, xglyphs, 1);
+
+			xp += xw->charsize.x;
 		}
-		if (doesexist)
-			break;
-
-		xfont = find_font(xw, font, u8char, frcflags);
-
-		XftDrawStringUtf8(xw->draw, fg, xfont,
-				  xp, winy + xfont->ascent,
-				  (FcChar8 *) u8c, u8cblen);
-
-		xp += xw->charsize.x;
 	}
+
+	if (nxglyphs)
+		XftDrawGlyphs(xw->draw, fg, font->match, xp,
+			      winy + font->match->ascent, xglyphs, nxglyphs);
 
 	if (base.underline)
 		XftDrawRect(xw->draw, fg, winx, winy + font->match->ascent + 1,
-			    width, 1);
+			    charlen * xw->charsize.x, 1);
 }
 
 struct st_glyph *term_pos(struct st_term *term, struct coord pos)
@@ -982,10 +965,9 @@ struct st_glyph *term_pos(struct st_term *term, struct coord pos)
 
 static void xdrawcursor(struct st_window *xw)
 {
-	int sl;
 	struct st_glyph g, *p, *old;
 
-	g.c[0] = ' ';
+	g.c = ' ';
 	g.cmp = 0;
 	g.bg = defaultcs;
 	g.fg = defaultbg;
@@ -996,13 +978,12 @@ static void xdrawcursor(struct st_window *xw)
 	p = term_pos(&xw->term, xw->term.c.pos);
 
 	if (p->set)
-		memcpy(g.c, p->c, UTF_SIZ);
+		g.c = p->c;
 
 	/* remove the old cursor */
 	old = term_pos(&xw->term, xw->term.oldcursor);
 	if (old->set) {
-		sl = utf8size(old->c);
-		xdraws(xw, old->c, *old, xw->term.oldcursor, 1, sl);
+		xdraw_glyphs(xw, xw->term.oldcursor, *old, old, 1);
 	} else {
 		xtermclear(xw,
 			   xw->term.oldcursor.x, xw->term.oldcursor.y,
@@ -1021,8 +1002,7 @@ static void xdrawcursor(struct st_window *xw)
 			g.bg = t;
 		}
 
-		sl = utf8size(g.c);
-		xdraws(xw, g.c, g, xw->term.c.pos, 1, sl);
+		xdraw_glyphs(xw, xw->term.c.pos, g, &g, 1);
 		xw->term.oldcursor = xw->term.c.pos;
 	}
 }
@@ -1030,9 +1010,8 @@ static void xdrawcursor(struct st_window *xw)
 static void drawregion(struct st_window *xw,
 		       int x1, int y1, int x2, int y2)
 {
-	int ic, ib, x, y, ox, sl;
+	int ic, ib, x, y, ox;
 	struct st_glyph base, new;
-	char buf[DRAW_BUF_SIZ];
 	bool ena_sel = xw->term.sel.bx != -1;
 
 	if (xw->term.sel.alt != xw->term.altscreen)
@@ -1051,27 +1030,25 @@ static void drawregion(struct st_window *xw,
 		ic = ib = ox = 0;
 		for (x = x1; x < x2; x++) {
 			new = xw->term.line[y][x];
-			if (ena_sel && *(new.c) && selected(&xw->term.sel, x, y))
+			if (ena_sel && new.c && selected(&xw->term.sel, x, y))
 				new.reverse ^= 1;
-			if (ib > 0 && new.cmp != base.cmp) {
-				xdraws(xw, buf, base, (struct coord) {ox, y},
-				       ic, ib);
-				ic = ib = 0;
+			if (ic > 0 && new.cmp != base.cmp) {
+				xdraw_glyphs(xw, (struct coord) {ox, y},
+					     base, &xw->term.line[y][ox], ic);
+				ic = 0;
 			}
 			if (new.set) {
-				if (ib == 0) {
+				if (ic == 0) {
 					ox = x;
 					base = new;
 				}
 
-				sl = utf8size(new.c);
-				memcpy(buf + ib, new.c, sl);
-				ib += sl;
 				++ic;
 			}
 		}
-		if (ib > 0)
-			xdraws(xw, buf, base, (struct coord) {ox, y}, ic, ib);
+		if (ic > 0)
+			xdraw_glyphs(xw, (struct coord) {ox, y},
+				     base, &xw->term.line[y][ox], ic);
 	}
 	xdrawcursor(xw);
 }
@@ -1174,7 +1151,7 @@ static void __tclearregion(struct st_term *term, struct coord p1,
 			if (g->set) {
 				*g = term->c.attr;
 
-				memcpy(g->c, " ", 2);
+				g->c = ' ';
 				g->set = 1;
 			}
 		}
@@ -1207,7 +1184,7 @@ static void tclearregion(struct st_term *term, struct coord p1,
 			if (g->set) {
 				*g = term->c.attr;
 
-				memcpy(g->c, " ", 2);
+				g->c = ' ';
 				g->set = 1;
 			}
 		}
@@ -1377,7 +1354,7 @@ static void tnewline(struct st_term *term, int first_col)
 	tmoveto(term, pos);
 }
 
-static void tsetchar(struct st_term *term, const char *c, struct coord pos)
+static void tsetchar(struct st_term *term, unsigned c, struct coord pos)
 {
 	static const char *vt100_0[62] = {	/* 0x41 - 0x7e */
 		"↑", "↓", "→", "←", "█", "▚", "☃",	/* A - G */
@@ -1396,12 +1373,12 @@ static void tsetchar(struct st_term *term, const char *c, struct coord pos)
 	 * The table is proudly stolen from rxvt.
 	 */
 	if (term->c.attr.gfx)
-		if (c[0] >= 0x41 && c[0] <= 0x7e && vt100_0[c[0] - 0x41])
-			c = vt100_0[c[0] - 0x41];
+		if (c >= 0x41 && c <= 0x7e && vt100_0[c - 0x41])
+			c = *vt100_0[c - 0x41];
 
 	term->dirty[pos.y] = 1;
 	*g = term->c.attr;
-	memcpy(g->c, c, UTF_SIZ);
+	g->c = c;
 	g->set = 1;
 }
 
@@ -1976,6 +1953,7 @@ static void strhandle(struct st_window *xw)
 static void tputc(struct st_window *xw,
 		  char *c, int len)
 {
+	unsigned ucs;
 	unsigned char ascii = *c;
 	bool control = ascii < '\x20' || ascii == 0177;
 	struct st_term *term = &xw->term;
@@ -2103,12 +2081,11 @@ static void tputc(struct st_window *xw,
 			term->esc = 0;
 		} else if (term->esc & ESC_TEST) {
 			if (ascii == '8') {	/* DEC screen alignment test. */
-				char E[UTF_SIZ] = "E";
 				struct coord p;
 
 				for (p.x = 0; p.x < term->size.x; ++p.x)
 					for (p.y = 0; p.y < term->size.y; ++p.y)
-						tsetchar(term, E, p);
+						tsetchar(term, 'E', p);
 			}
 			term->esc = 0;
 		} else {
@@ -2219,7 +2196,9 @@ static void tputc(struct st_window *xw,
 			term_pos(term, term->c.pos),
 			(term->size.x - term->c.pos.x - 1) * sizeof(struct st_glyph));
 
-	tsetchar(term, c, term->c.pos);
+	FcUtf8ToUcs4((unsigned char *) c, &ucs, len);
+
+	tsetchar(term, ucs, term->c.pos);
 	if (term->c.pos.x + 1 < term->size.x)
 		tmoverel(term, 1, 0);
 	else
@@ -2537,14 +2516,12 @@ static void brelease(struct st_window *xw, XEvent *e)
 				sel->bx = sel->ex;
 				while (sel->bx > 0 &&
 				       term->line[sel->ey][sel->bx - 1].set &&
-				       term->line[sel->ey][sel->bx - 1].c[0]
-				       != ' ')
+				       term->line[sel->ey][sel->bx - 1].c != ' ')
 					sel->bx--;
 				sel->b.x = sel->bx;
 				while (sel->ex < term->size.x - 1 &&
 				       term->line[sel->ey][sel->ex + 1].set &&
-				       term->line[sel->ey][sel->ex + 1].c[0]
-				       != ' ')
+				       term->line[sel->ey][sel->ex + 1].c != ' ')
 					sel->ex++;
 				sel->e.x = sel->ex;
 				sel->b.y = sel->e.y = sel->ey;
