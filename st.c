@@ -220,17 +220,20 @@ struct st_term {
 	struct str_escape strescseq;
 };
 
-/* Font structure */
 struct st_font {
-	int		height;
-	int		width;
-	int		ascent;
-	int		descent;
-	short		lbearing;
-	short		rbearing;
 	XftFont		*match;
 	FcFontSet	*set;
 	FcPattern	*pattern;
+};
+
+struct st_fontcache {
+	XftFont		*font;
+	enum {
+		FRC_NORMAL,
+		FRC_ITALIC,
+		FRC_BOLD,
+		FRC_ITALICBOLD
+	} flags;
 };
 
 struct st_key {
@@ -289,6 +292,9 @@ struct st_window {
 	char		*embed;
 
 	struct st_font	font, bfont, ifont, ibfont;
+	char		*fontname;
+	int		fontsize;
+	struct st_fontcache fontcache[32];
 
 	int		scr;
 	bool		isfixed;	/* is fixed geometry? */
@@ -732,31 +738,6 @@ static void selscroll(struct st_term *term, int orig, int n)
 
 /* Screen drawing code */
 
-static char *usedfont = NULL;
-static int usedfontsize = 0;
-
-/* Font Ring Cache */
-enum {
-	FRC_NORMAL,
-	FRC_ITALIC,
-	FRC_BOLD,
-	FRC_ITALICBOLD
-};
-
-struct st_fontcache {
-	XftFont *font;
-	long c;
-	int flags;
-};
-
-/*
- * Fontcache is a ring buffer, with frccur as current position and frclen as
- * the current length of used elements.
- */
-
-static struct st_fontcache frc[1024];
-static int frccur = -1, frclen = 0;
-
 static void xtermclear(struct st_window *xw,
 		       int col1, int row1, int col2, int row2)
 {
@@ -779,6 +760,84 @@ static void xclear(struct st_window *xw,
 		    x1, y1, x2 - x1, y2 - y1);
 }
 
+static XftColor *reverse_color(struct st_window *xw, XftColor *color,
+			       XftColor *def, XftColor *defreverse,
+			       XftColor *reverse)
+{
+	if (color == def) {
+		return defreverse;
+	} else {
+		XRenderColor t;
+
+		t.red = ~color->color.red;
+		t.green = ~color->color.green;
+		t.blue = ~color->color.blue;
+		t.alpha = color->color.alpha;
+		XftColorAllocValue(xw->dpy, xw->vis, xw->cmap, &t, reverse);
+
+		return reverse;
+	}
+}
+
+static XftFont *find_font(struct st_window *xw,
+			  struct st_font *font,
+			  long u8char, unsigned flags)
+{
+	FcFontSet *fcsets[] = { font->set };
+	FcPattern *fcpattern, *fontpattern;
+	FcCharSet *fccharset;
+	FcResult fcres;
+	XftFont *xfont;
+	struct st_fontcache *fc;
+
+	/* Search the font cache. */
+	for (fc = xw->fontcache;
+	     fc < xw->fontcache + ARRAY_SIZE(xw->fontcache) && fc->font;
+	     fc++)
+		if (fc->flags == flags &&
+		    XftCharIndex(xw->dpy, fc->font, u8char))
+			return fc->font;
+
+	/*
+	 * Nothing was found in the cache. Now use
+	 * some dozen of Fontconfig calls to get the
+	 * font for one single character.
+	 */
+	fcpattern = FcPatternDuplicate(font->pattern);
+	fccharset = FcCharSetCreate();
+
+	FcCharSetAddChar(fccharset, u8char);
+	FcPatternAddCharSet(fcpattern, FC_CHARSET,
+			    fccharset);
+	FcPatternAddBool(fcpattern, FC_SCALABLE, FcTrue);
+
+	FcConfigSubstitute(0, fcpattern, FcMatchPattern);
+	FcDefaultSubstitute(fcpattern);
+
+	fontpattern = FcFontSetMatch(NULL, fcsets, 1, fcpattern, &fcres);
+
+	xfont = XftFontOpenPattern(xw->dpy, fontpattern);
+
+	if (xfont) {
+		fc = &xw->fontcache[ARRAY_SIZE(xw->fontcache) - 1];
+		if (fc->font)
+			XftFontClose(xw->dpy, fc->font);
+
+		fc = xw->fontcache;
+
+		memmove(fc + 1, fc,
+			(ARRAY_SIZE(xw->fontcache) - 1) * sizeof(*fc));
+
+		fc->flags = flags;
+		fc->font = xfont;
+	}
+
+	FcCharSetDestroy(fccharset);
+	FcPatternDestroy(fcpattern);
+
+	return xfont;
+}
+
 static void xdraws(struct st_window *xw,
 		   char *s, struct st_glyph base,
 		   struct coord pos,
@@ -787,18 +846,10 @@ static void xdraws(struct st_window *xw,
 	int winx = borderpx + pos.x * xw->charsize.x;
 	int winy = borderpx + pos.y * xw->charsize.y;
 	int width = charlen * xw->charsize.x;
-	int xp, i, frp, frcflags;
-	int u8fl, u8fblen, u8cblen, doesexist;
-	char *u8c, *u8fs;
-	unsigned u8char;
+	int frcflags;
 	struct st_font *font = &xw->font;
-	FcResult fcres;
-	FcPattern *fcpattern, *fontpattern;
-	FcFontSet *fcsets[] = { NULL };
-	FcCharSet *fccharset;
 	XftColor *fg = &xw->col[base.fg], *bg = &xw->col[base.bg],
 	    revfg, revbg;
-	XRenderColor colfg, colbg;
 
 	frcflags = FRC_NORMAL;
 
@@ -833,29 +884,11 @@ static void xdraws(struct st_window *xw,
 	}
 
 	if (xw->term.reverse) {
-		if (fg == &xw->col[defaultfg]) {
-			fg = &xw->col[defaultbg];
-		} else {
-			colfg.red = ~fg->color.red;
-			colfg.green = ~fg->color.green;
-			colfg.blue = ~fg->color.blue;
-			colfg.alpha = fg->color.alpha;
-			XftColorAllocValue(xw->dpy, xw->vis, xw->cmap, &colfg,
-					   &revfg);
-			fg = &revfg;
-		}
+		fg = reverse_color(xw, fg, &xw->col[defaultfg],
+				   &xw->col[defaultbg], &revfg);
 
-		if (bg == &xw->col[defaultbg]) {
-			bg = &xw->col[defaultfg];
-		} else {
-			colbg.red = ~bg->color.red;
-			colbg.green = ~bg->color.green;
-			colbg.blue = ~bg->color.blue;
-			colbg.alpha = bg->color.alpha;
-			XftColorAllocValue(xw->dpy, xw->vis, xw->cmap, &colbg,
-					   &revbg);
-			bg = &revbg;
-		}
+		bg = reverse_color(xw, bg, &xw->col[defaultbg],
+				   &xw->col[defaultfg], &revbg);
 	}
 
 	if (base.reverse)
@@ -881,17 +914,19 @@ static void xdraws(struct st_window *xw,
 	/* Clean up the region we want to draw to. */
 	XftDrawRect(xw->draw, bg, winx, winy, width, xw->charsize.y);
 
-	fcsets[0] = font->set;
-	for (xp = winx; bytelen > 0;) {
+	for (int xp = winx; bytelen > 0;) {
 		/*
 		 * Search for the range in the to be printed string of glyphs
 		 * that are in the main font. Then print that range. If
 		 * some glyph is found that is not in the font, do the
 		 * fallback dance.
 		 */
-		u8fs = s;
-		u8fblen = 0;
-		u8fl = 0;
+		unsigned u8char;
+		char *u8c, *u8fs = s;
+		int u8cblen, doesexist;
+		int u8fblen = 0, u8fl = 0;
+		XftFont *xfont;
+
 		for (;;) {
 			u8c = s;
 			u8cblen = FcUtf8ToUcs4((unsigned char *) s,
@@ -913,10 +948,10 @@ static void xdraws(struct st_window *xw,
 					XftDrawStringUtf8(xw->draw, fg,
 							  font->match, xp,
 							  winy +
-							  font->ascent,
+							  font->match->ascent,
 							  (FcChar8 *) u8fs,
 							  u8fblen);
-					xp += font->width * u8fl;
+					xp += xw->charsize.x * u8fl;
 				}
 				break;
 			}
@@ -927,78 +962,17 @@ static void xdraws(struct st_window *xw,
 		if (doesexist)
 			break;
 
-		frp = frccur;
-		/* Search the font cache. */
-		for (i = 0; i < frclen; i++, frp--) {
-			if (frp <= 0)
-				frp = ARRAY_SIZE(frc) - 1;
+		xfont = find_font(xw, font, u8char, frcflags);
 
-			if (frc[frp].c == u8char
-			    && frc[frp].flags == frcflags) {
-				break;
-			}
-		}
-
-		/* Nothing was found. */
-		if (i >= frclen) {
-			/*
-			 * Nothing was found in the cache. Now use
-			 * some dozen of Fontconfig calls to get the
-			 * font for one single character.
-			 */
-			fcpattern = FcPatternDuplicate(font->pattern);
-			fccharset = FcCharSetCreate();
-
-			FcCharSetAddChar(fccharset, u8char);
-			FcPatternAddCharSet(fcpattern, FC_CHARSET,
-					    fccharset);
-			FcPatternAddBool(fcpattern, FC_SCALABLE, FcTrue);
-
-			FcConfigSubstitute(0, fcpattern, FcMatchPattern);
-			FcDefaultSubstitute(fcpattern);
-
-			fontpattern = FcFontSetMatch(0, fcsets,
-						     FcTrue, fcpattern,
-						     &fcres);
-
-			/*
-			 * Overwrite or create the new cache entry
-			 * entry.
-			 */
-			frccur++;
-			frclen++;
-			if (frccur >= ARRAY_SIZE(frc))
-				frccur = 0;
-			if (frclen > ARRAY_SIZE(frc)) {
-				frclen = ARRAY_SIZE(frc);
-				XftFontClose(xw->dpy, frc[frccur].font);
-			}
-
-			frc[frccur].font = XftFontOpenPattern(xw->dpy,
-							      fontpattern);
-			frc[frccur].c = u8char;
-			frc[frccur].flags = frcflags;
-
-			FcPatternDestroy(fcpattern);
-			FcCharSetDestroy(fccharset);
-
-			frp = frccur;
-		}
-
-		XftDrawStringUtf8(xw->draw, fg, frc[frp].font,
-				  xp, winy + frc[frp].font->ascent,
+		XftDrawStringUtf8(xw->draw, fg, xfont,
+				  xp, winy + xfont->ascent,
 				  (FcChar8 *) u8c, u8cblen);
 
-		xp += font->width;
+		xp += xw->charsize.x;
 	}
 
-	/*
-	   XftDrawStringUtf8(xw->draw, fg, font->set, winx,
-	   winy + font->ascent, (FcChar8 *)s, bytelen);
-	 */
-
 	if (base.underline)
-		XftDrawRect(xw->draw, fg, winx, winy + font->ascent + 1,
+		XftDrawRect(xw->draw, fg, winx, winy + font->match->ascent + 1,
 			    width, 1);
 }
 
@@ -2903,19 +2877,10 @@ static int xloadfont(struct st_window *xw, struct st_font *f,
 
 	f->pattern = FcPatternDuplicate(pattern);
 
-	f->ascent = f->match->ascent;
-	f->descent = f->match->descent;
-	f->lbearing = 0;
-	f->rbearing = f->match->max_advance_width;
-
-	f->height = f->match->height;
-	f->width = f->lbearing + f->rbearing;
-
 	return 0;
 }
 
-static void xloadfonts(struct st_window *xw,
-		       char *fontstr, int fontsize)
+static void xloadfonts(struct st_window *xw, char *fontstr, int fontsize)
 {
 	FcPattern *pattern;
 	FcResult result;
@@ -2934,20 +2899,20 @@ static void xloadfonts(struct st_window *xw,
 		FcPatternDel(pattern, FC_PIXEL_SIZE);
 		FcPatternAddDouble(pattern, FC_PIXEL_SIZE,
 				   (double) fontsize);
-		usedfontsize = fontsize;
+		xw->fontsize = fontsize;
 	} else {
 		result =
 		    FcPatternGetDouble(pattern, FC_PIXEL_SIZE, 0,
 				       &fontval);
 		if (result == FcResultMatch) {
-			usedfontsize = (int) fontval;
+			xw->fontsize = (unsigned) fontval;
 		} else {
 			/*
 			 * Default font size is 12, if none given. This is to
 			 * have a known usedfontsize value.
 			 */
 			FcPatternAddDouble(pattern, FC_PIXEL_SIZE, 12);
-			usedfontsize = 12;
+			xw->fontsize = 12;
 		}
 	}
 
@@ -2958,8 +2923,8 @@ static void xloadfonts(struct st_window *xw,
 		die("st: can't open font %s\n", fontstr);
 
 	/* Setting character width and height. */
-	xw->charsize.x = xw->font.width;
-	xw->charsize.y = xw->font.height;
+	xw->charsize.x = xw->font.match->max_advance_width;
+	xw->charsize.y = xw->font.match->height;
 
 	FcPatternDel(pattern, FC_SLANT);
 	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ITALIC);
@@ -2981,19 +2946,13 @@ static void xloadfonts(struct st_window *xw,
 
 static void xunloadfonts(struct st_window *xw)
 {
-	int i, ip;
-
 	/*
 	 * Free the loaded fonts in the font cache. This is done backwards
 	 * from the frccur.
 	 */
-	for (i = 0, ip = frccur; i < frclen; i++, ip--) {
-		if (ip < 0)
-			ip = ARRAY_SIZE(frc) - 1;
-		XftFontClose(xw->dpy, frc[ip].font);
-	}
-	frccur = -1;
-	frclen = 0;
+	for (unsigned i = 0; i < ARRAY_SIZE(xw->fontcache); i++)
+		if (xw->fontcache[i].font)
+			XftFontClose(xw->dpy, xw->fontcache[i].font);
 
 	XftFontClose(xw->dpy, xw->font.match);
 	FcPatternDestroy(xw->font.pattern);
@@ -3012,7 +2971,7 @@ static void xunloadfonts(struct st_window *xw)
 static void xzoom(struct st_window *xw, const union st_arg *arg)
 {
 	xunloadfonts(xw);
-	xloadfonts(xw, usedfont, usedfontsize + arg->i);
+	xloadfonts(xw, xw->fontname, xw->fontsize + arg->i);
 	cresize(xw, 0, 0);
 	redraw(xw, 0);
 }
@@ -3034,8 +2993,8 @@ static void xinit(struct st_window *xw)
 	if (!FcInit())
 		die("Could not init fontconfig.\n");
 
-	usedfont = (opt_font == NULL) ? font : opt_font;
-	xloadfonts(xw, usedfont, 0);
+	xw->fontname = (opt_font == NULL) ? font : opt_font;
+	xloadfonts(xw, xw->fontname, 0);
 
 	/* colors */
 	xw->cmap = XDefaultColormap(xw->dpy, xw->scr);
