@@ -372,7 +372,7 @@ static void sigchld(int a)
 		exit(EXIT_FAILURE);
 }
 
-static ssize_t xwrite(int fd, char *s, size_t len)
+static ssize_t xwrite(int fd, void *s, size_t len)
 {
 	size_t aux = len;
 
@@ -2008,15 +2008,6 @@ static void tputc(struct st_window *xw,
 	bool control = ascii < '\x20' || ascii == 0177;
 	struct st_term *term = &xw->term;
 
-	if (iofd != -1) {
-		if (xwrite(iofd, c, len) < 0) {
-			fprintf(stderr, "Error writing in %s:%s\n",
-				opt_io, strerror(errno));
-			close(iofd);
-			iofd = -1;
-		}
-	}
-
 	/*
 	 * STR sequences must be checked before anything else
 	 * because it can use some control codes as part of the sequence.
@@ -2389,6 +2380,14 @@ static void ttyread(struct st_window *xw)
 			term->cmdbuf + term->cmdbuflen,
 			sizeof(term->cmdbuf) - term->cmdbuflen)) < 0)
 		die("Couldn't read from shell: %s\n", SERRNO);
+
+	if (iofd != -1 &&
+	    xwrite(iofd, term->cmdbuf + term->cmdbuflen, ret) < 0) {
+		fprintf(stderr, "Error writing in %s:%s\n",
+			opt_io, strerror(errno));
+		close(iofd);
+		iofd = -1;
+	}
 
 	/* process every complete utf8 char */
 	term->cmdbuflen += ret;
