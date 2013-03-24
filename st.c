@@ -175,7 +175,6 @@ struct st_selection {
 		int	x, y;
 	} b, e;
 	char		*clip;
-	Atom		xtarget;
 	bool		alt;
 	struct timeval	tclick1;
 	struct timeval	tclick2;
@@ -287,6 +286,7 @@ struct st_window {
 	XIC		xic;
 	XftDraw		*draw;
 	Visual		*vis;
+	Atom		selection;
 	char		*default_title;
 	char		*class;
 	char		*embed;
@@ -633,7 +633,7 @@ static void selnotify(struct st_window *xw, XEvent *e)
 
 static void selpaste(struct st_window *xw, const union st_arg *dummy)
 {
-	XConvertSelection(xw->dpy, XA_PRIMARY, xw->term.sel.xtarget,
+	XConvertSelection(xw->dpy, XA_PRIMARY, xw->selection,
 			  XA_PRIMARY, xw->win, CurrentTime);
 }
 
@@ -642,7 +642,7 @@ static void clippaste(struct st_window *xw, const union st_arg *dummy)
 	Atom clipboard;
 
 	clipboard = XInternAtom(xw->dpy, "CLIPBOARD", 0);
-	XConvertSelection(xw->dpy, clipboard, xw->term.sel.xtarget,
+	XConvertSelection(xw->dpy, clipboard, xw->selection,
 			  XA_PRIMARY, xw->win, CurrentTime);
 }
 
@@ -675,12 +675,12 @@ static void selrequest(struct st_window *xw, XEvent *e)
 	xa_targets = XInternAtom(xw->dpy, "TARGETS", 0);
 	if (xsre->target == xa_targets) {
 		/* respond with the supported type */
-		string = sel->xtarget;
+		string = xw->selection;
 		XChangeProperty(xsre->display, xsre->requestor,
 				xsre->property, XA_ATOM, 32,
 				PropModeReplace, (unsigned char *) & string, 1);
 		xev.property = xsre->property;
-	} else if (xsre->target == sel->xtarget && sel->clip != NULL) {
+	} else if (xsre->target == xw->selection && sel->clip != NULL) {
 		XChangeProperty(xsre->display, xsre->requestor,
 				xsre->property, xsre->target, 8,
 				PropModeReplace, (unsigned char *) sel->clip,
@@ -2756,18 +2756,11 @@ static void tnew(struct st_term *term, int col, int row)
 		term->dirty[row] = 0;
 	}
 
+	term->sel.bx = -1;
 	term->numlock = 1;
 	memset(term->tabs, 0, term->size.x * sizeof(*term->tabs));
 	/* setup screen */
 	treset(term);
-}
-
-static void selinit(struct st_window *xw)
-{
-	xw->term.sel.bx = -1;
-	xw->term.sel.xtarget = XInternAtom(xw->dpy, "UTF8_STRING", 0);
-	if (xw->term.sel.xtarget == None)
-		xw->term.sel.xtarget = XA_STRING;
 }
 
 static void xloadcolors(struct st_window *xw)
@@ -3059,6 +3052,10 @@ static void xinit(struct st_window *xw)
 	xw->wmdeletewin = XInternAtom(xw->dpy, "WM_DELETE_WINDOW", False);
 	XSetWMProtocols(xw->dpy, xw->win, &xw->wmdeletewin, 1);
 
+	xw->selection = XInternAtom(xw->dpy, "UTF8_STRING", 0);
+	if (xw->selection == None)
+		xw->selection = XA_STRING;
+
 	xresettitle(xw);
 	XMapWindow(xw->dpy, xw->win);
 	xhints(xw);
@@ -3274,7 +3271,6 @@ int main(int argc, char *argv[])
 	tnew(&xw.term, 80, 24);
 	xinit(&xw);
 	ttynew(&xw);
-	selinit(&xw);
 	run(&xw);
 
 	return 0;
