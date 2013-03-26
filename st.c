@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <locale.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -114,7 +115,7 @@ struct st_window {
 
 	struct st_font	font, bfont, ifont, ibfont;
 	char		*fontname;
-	int		fontsize;
+	int		fontzoom;
 	struct st_fontcache fontcache[32];
 
 	int		scr;
@@ -987,44 +988,34 @@ static int xloadfont(struct st_window *xw, struct st_font *f,
 	return 0;
 }
 
-static void xloadfonts(struct st_window *xw, const char *fontstr, int fontsize)
+static void xloadfonts(struct st_window *xw, const char *fontstr, int zoom)
 {
 	FcPattern *pattern;
-	FcResult result;
-	double fontval;
+	double pixelsize;
 
-	if (fontstr[0] == '-') {
+	if (fontstr[0] == '-')
 		pattern = XftXlfdParse(fontstr, False, False);
-	} else {
+	else
 		pattern = FcNameParse((FcChar8 *) fontstr);
-	}
 
 	if (!pattern)
 		die("st: can't open font %s\n", fontstr);
 
-	if (fontsize > 0) {
-		FcPatternDel(pattern, FC_PIXEL_SIZE);
-		FcPatternAddDouble(pattern, FC_PIXEL_SIZE,
-				   (double) fontsize);
-		xw->fontsize = fontsize;
-	} else {
-		result =
-		    FcPatternGetDouble(pattern, FC_PIXEL_SIZE, 0,
-				       &fontval);
-		if (result == FcResultMatch) {
-			xw->fontsize = (unsigned) fontval;
-		} else {
-			/*
-			 * Default font size is 12, if none given. This is to
-			 * have a known usedfontsize value.
-			 */
-			FcPatternAddDouble(pattern, FC_PIXEL_SIZE, 12);
-			xw->fontsize = 12;
-		}
-	}
-
 	FcConfigSubstitute(0, pattern, FcMatchPattern);
 	FcDefaultSubstitute(pattern);
+
+	if (FcPatternGetDouble(pattern, FC_PIXEL_SIZE,
+			       0, &pixelsize) == FcResultMatch)
+		FcPatternDel(pattern, FC_PIXEL_SIZE);
+	else
+		/*
+		 * Default font size is 12, if none given. This is to
+		 * have a known usedfontsize value.
+		 */
+		pixelsize = 12;
+
+	pixelsize *= exp((double) zoom / 8);
+	FcPatternAddDouble(pattern, FC_PIXEL_SIZE, pixelsize);
 
 	if (xloadfont(xw, &xw->font, pattern))
 		die("st: can't open font %s\n", fontstr);
@@ -1077,8 +1068,10 @@ static void xunloadfonts(struct st_window *xw)
 
 static void xzoom(struct st_window *xw, const union st_arg *arg)
 {
+	xw->fontzoom = clamp(xw->fontzoom + arg->i, -8, 8);
+
 	xunloadfonts(xw);
-	xloadfonts(xw, xw->fontname, xw->fontsize + arg->i);
+	xloadfonts(xw, xw->fontname, xw->fontzoom);
 	cresize(xw, 0, 0);
 	tfulldirt(&xw->term);
 }
