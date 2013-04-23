@@ -139,7 +139,7 @@ void term_sel_start(struct st_term *term, unsigned type, struct coord start)
 	sel->type = type;
 	sel->start = sel->end = sel->p1 = sel->p2 = start;
 
-	tfulldirt(term);
+	term->dirty = true;
 }
 
 void term_sel_end(struct st_term *term, struct coord end)
@@ -168,7 +168,7 @@ void term_sel_end(struct st_term *term, struct coord end)
 		break;
 	}
 
-	tfulldirt(term);
+	term->dirty = true;
 }
 
 /* Escape handling */
@@ -236,7 +236,7 @@ static void __tclearline(struct st_term *term, unsigned y,
 {
 	struct st_glyph *g;
 
-	term->dirty[y] = 1;
+	term->dirty = true;
 
 	for (g = &term->line[y][start];
 	     g < &term->line[y][end];
@@ -268,12 +268,8 @@ static void tscrolldown(struct st_term *term, int orig, int n)
 		     (struct coord) {0, term->bot - n + 1},
 		     (struct coord) {term->size.x, term->bot + 1});
 
-	for (i = term->bot; i >= orig + n; i--) {
+	for (i = term->bot; i >= orig + n; i--)
 		swap(term->line[i], term->line[i - n]);
-
-		term->dirty[i] = 1;
-		term->dirty[i - n] = 1;
-	}
 
 	selscroll(term, orig, n);
 }
@@ -289,25 +285,23 @@ static void tscrollup(struct st_term *term, int orig, int n)
 		     (struct coord) {term->size.x, orig + n});
 
 	/* XXX: optimize? */
-	for (i = orig; i <= term->bot - n; i++) {
+	for (i = orig; i <= term->bot - n; i++)
 		swap(term->line[i], term->line[i + n]);
-
-		term->dirty[i] = 1;
-		term->dirty[i + n] = 1;
-	}
 
 	selscroll(term, orig, -n);
 }
 
 static void tmovex(struct st_term *term, unsigned x)
 {
+	term->dirty = true;
+
 	term->c.wrapnext = 0;
 	term->c.pos.x = min(x, term->size.x - 1);
 }
 
 static void tmovey(struct st_term *term, unsigned y)
 {
-	term->dirty[term->c.pos.y] = 1;
+	term->dirty = true;
 
 	term->c.wrapnext = 0;
 	term->c.pos.y = term->c.origin
@@ -332,7 +326,7 @@ static void tmoveato(struct st_term *term, struct coord pos)
 
 static void tmoverel(struct st_term *term, int x, int y)
 {
-	term->dirty[term->c.pos.y] = 1;
+	term->dirty = true;
 
 	term->c.pos.x = clamp_t(int, term->c.pos.x + x, 0, term->size.x - 1);
 	term->c.pos.y = clamp_t(int, term->c.pos.y + y, 0, term->size.y - 1);
@@ -445,7 +439,7 @@ static void tsetchar(struct st_term *term, unsigned c, struct coord pos)
 		if (c >= 0x41 && c <= 0x7e && vt100_0[c - 0x41])
 			c = *vt100_0[c - 0x41];
 
-	term->dirty[pos.y] = 1;
+	term->dirty = true;
 	*g = term->c.attr;
 	g->c = c;
 }
@@ -627,7 +621,7 @@ static void tswapscreen(struct st_term *term)
 	swap(term->line, term->alt);
 	term->sel.type = SEL_NONE;
 	term->altscreen ^= 1;
-	tfulldirt(term);
+	term->dirty = true;
 }
 
 static void tsetmode(struct st_term *term, bool priv,
@@ -646,7 +640,7 @@ static void tsetmode(struct st_term *term, bool priv,
 			case 5:	/* DECSCNM -- Reverse video */
 				if (set != term->reverse) {
 					term->reverse = set;
-					tfulldirt(term);
+					term->dirty = true;
 				}
 				break;
 			case 6:	/* DECOM -- Origin */
@@ -976,7 +970,7 @@ static void strhandle(struct st_term *term)
 				break;
 
 			if (term->setcolorname(term, j, p))
-				tfulldirt(term);
+				term->dirty = true;
 			else
 				fprintf(stderr,
 					"erresc: invalid color %s\n", p);
@@ -1379,12 +1373,10 @@ void term_resize(struct st_term *term, struct coord size)
 	/* resize to new height */
 	term->line = xrealloc(term->line, size.y * sizeof(struct st_glyph *));
 	term->alt = xrealloc(term->alt, size.y * sizeof(struct st_glyph *));
-	term->dirty = xrealloc(term->dirty, size.y * sizeof(*term->dirty));
 	term->tabs = xrealloc(term->tabs, size.x * sizeof(*term->tabs));
 
 	/* resize each row to new width, zero-pad if needed */
 	for (i = 0; i < minrow; i++) {
-		term->dirty[i] = 1;
 		term->line[i] = xrealloc(term->line[i], size.x * sizeof(struct st_glyph));
 		term->alt[i] = xrealloc(term->alt[i], size.x * sizeof(struct st_glyph));
 		for (x = mincol; x < size.x ; x++) {
@@ -1395,7 +1387,6 @@ void term_resize(struct st_term *term, struct coord size)
 
 	/* allocate any new rows */
 	for ( /* i == minrow */ ; i < size.y; i++) {
-		term->dirty[i] = 1;
 		term->line[i] = xcalloc(size.x, sizeof(struct st_glyph));
 		term->alt[i] = xcalloc(size.x, sizeof(struct st_glyph));
 	}
@@ -1536,13 +1527,11 @@ void term_init(struct st_term *term, int col, int row, char *shell,
 	term->size.x = col;
 	term->line = xmalloc(term->size.y * sizeof(struct st_glyph *));
 	term->alt = xmalloc(term->size.y * sizeof(struct st_glyph *));
-	term->dirty = xmalloc(term->size.y * sizeof(*term->dirty));
 	term->tabs = xmalloc(term->size.x * sizeof(*term->tabs));
 
 	for (row = 0; row < term->size.y; row++) {
 		term->line[row] = xmalloc(term->size.x * sizeof(struct st_glyph));
 		term->alt[row] = xmalloc(term->size.x * sizeof(struct st_glyph));
-		term->dirty[row] = 0;
 	}
 
 	term->numlock = 1;

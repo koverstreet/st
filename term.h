@@ -155,7 +155,7 @@ struct st_term {
 	struct coord	ttysize; /* kill? */
 	struct st_glyph	**line;	/* screen */
 	struct st_glyph	**alt;	/* alternate screen */
-	bool		*dirty;	/* dirtyness of lines */
+	bool		dirty;	/* dirtyness of lines */
 	bool		*tabs;
 
 	struct tcursor	c;	/* cursor */
@@ -282,17 +282,4 @@ static inline void ttywrite(struct st_term *term, const char *s, size_t n)
 static inline struct st_glyph *term_pos(struct st_term *term, struct coord pos)
 {
 	return &term->line[pos.y][pos.x];
-}
-
-static inline void tsetdirt(struct st_term *term, unsigned top, unsigned bot)
-{
-	bot = min(bot, term->size.y - 1);
-
-	for (unsigned i = top; i <= bot; i++)
-		term->dirty[i] = 1;
-}
-
-static inline void tfulldirt(struct st_term *term)
-{
-	tsetdirt(term, 0, term->size.y - 1);
 }

@@ -574,12 +574,12 @@ static void draw(struct st_window *xw)
 	if (!xw->visible)
 		return;
 
+	if (!xw->term.dirty)
+		return;
+
+	xw->term.dirty = false;
+
 	for (pos.y = 0; pos.y < xw->term.size.y; pos.y++) {
-		if (!xw->term.dirty[pos.y])
-			continue;
-
-		xw->term.dirty[pos.y] = 0;
-
 		pos.x = 0;
 
 		while (pos.x < xw->term.size.x) {
@@ -1073,7 +1073,7 @@ static void xzoom(struct st_window *xw, const union st_arg *arg)
 	xunloadfonts(xw);
 	xloadfonts(xw, xw->fontname, xw->fontzoom);
 	cresize(xw, 0, 0);
-	tfulldirt(&xw->term);
+	xw->term.dirty = true;
 }
 
 static void xinit(struct st_window *xw)
@@ -1191,7 +1191,7 @@ static void xinit(struct st_window *xw)
 
 static void expose(struct st_window *xw, XEvent *ev)
 {
-	tfulldirt(&xw->term);
+	xw->term.dirty = true;
 }
 
 static void visibility(struct st_window *xw, XEvent *ev)
