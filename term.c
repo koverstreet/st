@@ -1341,7 +1341,6 @@ void term_resize(struct st_term *term, struct coord size)
 {
 	unsigned i, x;
 	unsigned minrow = min(size.y, term->size.y);
-	unsigned mincol = min(size.x, term->size.x);
 	int slide = term->c.pos.y - size.y + 1;
 	bool *bp;
 
@@ -1379,7 +1378,8 @@ void term_resize(struct st_term *term, struct coord size)
 	for (i = 0; i < minrow; i++) {
 		term->line[i] = xrealloc(term->line[i], size.x * sizeof(struct st_glyph));
 		term->alt[i] = xrealloc(term->alt[i], size.x * sizeof(struct st_glyph));
-		for (x = mincol; x < size.x ; x++) {
+
+		for (x = term->size.x; x < size.x; x++) {
 			term->line[i][x] = term->c.attr;
 			term->alt[i][x] = term->c.attr;
 		}
@@ -1389,7 +1389,13 @@ void term_resize(struct st_term *term, struct coord size)
 	for ( /* i == minrow */ ; i < size.y; i++) {
 		term->line[i] = xcalloc(size.x, sizeof(struct st_glyph));
 		term->alt[i] = xcalloc(size.x, sizeof(struct st_glyph));
+
+		for (x = 0; x < size.x; x++) {
+			term->line[i][x] = term->c.attr;
+			term->alt[i][x] = term->c.attr;
+		}
 	}
+
 	if (size.x > term->size.x) {
 		bp = term->tabs + term->size.x;
 
@@ -1525,17 +1531,16 @@ void term_init(struct st_term *term, int col, int row, char *shell,
 	/* set screen size */
 	term->size.y = row;
 	term->size.x = col;
-	term->line = xmalloc(term->size.y * sizeof(struct st_glyph *));
-	term->alt = xmalloc(term->size.y * sizeof(struct st_glyph *));
-	term->tabs = xmalloc(term->size.x * sizeof(*term->tabs));
+	term->line = xcalloc(term->size.y, sizeof(struct st_glyph *));
+	term->alt = xcalloc(term->size.y, sizeof(struct st_glyph *));
+	term->tabs = xcalloc(term->size.x, sizeof(*term->tabs));
 
 	for (row = 0; row < term->size.y; row++) {
-		term->line[row] = xmalloc(term->size.x * sizeof(struct st_glyph));
-		term->alt[row] = xmalloc(term->size.x * sizeof(struct st_glyph));
+		term->line[row] = xcalloc(term->size.x, sizeof(struct st_glyph));
+		term->alt[row] = xcalloc(term->size.x, sizeof(struct st_glyph));
 	}
 
 	term->numlock = 1;
-	memset(term->tabs, 0, term->size.x * sizeof(*term->tabs));
 	/* setup screen */
 	treset(term);
 	term_ttyinit(term, windowid, shell, cmd);
