@@ -1519,14 +1519,12 @@ static void term_ttyinit(struct st_term *term, unsigned long windowid,
 
 void term_init(struct st_term *term, int col, int row, char *shell,
 	       char **cmd, const char *logfile, unsigned long windowid,
-	       unsigned defaultfg, unsigned defaultbg, unsigned defaultcs,
-	       unsigned defaultucs)
+	       unsigned defaultfg, unsigned defaultbg, unsigned defaultcs)
 {
 	term->logfile	= logfile;
 	term->defaultfg = defaultfg;
 	term->defaultbg = defaultbg;
 	term->defaultcs = defaultcs;
-	term->defaultucs = defaultucs;
 
 	/* set screen size */
 	term->size.y = row;

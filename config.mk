@@ -14,7 +14,7 @@ X11LIB = /usr/X11R6/lib
 INCS = -I. -I/usr/include -I${X11INC} \
        $(shell pkg-config --cflags fontconfig) \
        $(shell pkg-config --cflags freetype2)
-LIBS = -L/usr/lib -lm -lc -L${X11LIB} -lX11 -lutil -lXext -lXft \
+LIBS = -L/usr/lib -lm -lc -L${X11LIB} -lX11 -lutil -lXft \
        $(shell pkg-config --libs fontconfig)  \
        $(shell pkg-config --libs freetype2)
 

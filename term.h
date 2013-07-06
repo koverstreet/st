@@ -57,7 +57,8 @@
 #define SPACES_PER_TAB	8
 
 /* TERM value */
-#define TERMNAME	"st-256color"
+//#define TERMNAME	"st-256color"
+#define TERMNAME	"xterm"
 
 #define BETWEEN(x, a, b)  ((a) <= (x) && (x) <= (b))
 
@@ -186,7 +187,6 @@ struct st_term {
 	unsigned short	defaultfg;
 	unsigned short	defaultbg;
 	unsigned short	defaultcs;
-	unsigned short	defaultucs;
 
 	int		(*setcolorname)(struct st_term *, int, const char *);
 	void		(*settitle)(struct st_term *, char *);
@@ -205,8 +205,7 @@ void term_resize(struct st_term *term, struct coord size);
 void term_shutdown(struct st_term *term);
 void term_init(struct st_term *term, int col, int row, char *shell,
 	       char **cmd, const char *logfile, unsigned long windowid,
-	       unsigned defaultfg, unsigned defaultbg, unsigned defaultcs,
-	       unsigned defaultucs);
+	       unsigned defaultfg, unsigned defaultbg, unsigned defaultcs);
 
 /* Random utility code */
 

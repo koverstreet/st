@@ -319,28 +319,31 @@ static void selrequest(struct st_window *xw, XEvent *e)
 /* Screen drawing code */
 
 static void xclear(struct st_window *xw, XftColor *color,
-		   struct coord pos, unsigned charlen)
+		   struct coord pos, unsigned charlen,
+		   bool clear_border)
 {
-	unsigned x1 = borderpx + pos.x * xw->charsize.x;
-	unsigned y1 = borderpx + pos.y * xw->charsize.y;
-	unsigned x2 = xw->charsize.x * charlen, y2 = xw->charsize.y;
+	unsigned x1 = xw->charsize.x * pos.x + borderpx;
+	unsigned x2 = xw->charsize.x * charlen;
+	unsigned y1 = xw->charsize.y * pos.y + borderpx;
+	unsigned y2 = xw->charsize.y;
 
-	/* Get borders if we're clearing adjacent to them */
-	if (!pos.x) {
-		x2 += x1;
-		x1 = 0;
+	if (clear_border) {
+		if (!pos.x) {
+			x2 += x1;
+			x1 = 0;
+		}
+
+		if (pos.x + charlen == xw->term.size.x)
+			x2 = xw->winsize.x - x1;
+
+		if (!pos.y) {
+			y2 += y1;
+			y1 = 0;
+		}
+
+		if (pos.y + 1 == xw->term.size.y)
+			y2 = xw->winsize.y - y1;
 	}
-
-	if (pos.x + charlen == xw->term.size.x)
-		x2 = xw->winsize.x - x1;
-
-	if (!pos.y) {
-		y2 += y1;
-		y1 = 0;
-	}
-
-	if (pos.y + 1 == xw->term.size.y)
-		y2 = xw->winsize.y - y1;
 
 	/* Clean up the region we want to draw to. */
 	XftDrawRect(xw->draw, color, x1, y1, x2, y2);
@@ -426,7 +429,7 @@ static XftFont *find_font(struct st_window *xw,
 
 static void xdraw_glyphs(struct st_window *xw, struct coord pos,
 			 struct st_glyph base, struct st_glyph *glyphs,
-			 unsigned charlen)
+			 unsigned charlen, bool clear_border)
 {
 	unsigned winx = borderpx + pos.x * xw->charsize.x, xp = winx;
 	unsigned winy = borderpx + pos.y * xw->charsize.y;
@@ -478,7 +481,7 @@ static void xdraw_glyphs(struct st_window *xw, struct coord pos,
 	if (base.reverse)
 		swap(bg, fg);
 
-	xclear(xw, bg, pos, charlen);
+	xclear(xw, bg, pos, charlen, clear_border);
 
 	for (unsigned i = 0; i < charlen; i++) {
 		/*
@@ -545,7 +548,7 @@ static void xdrawcursor(struct st_window *xw)
 	g.c = term_pos(&xw->term, xw->term.c.pos)->c;
 	g.cmp = 0;
 	g.fg = defaultbg;
-	g.bg = xw->focused ? defaultcs : defaultucs;
+	g.bg = defaultcs;
 
 	g.reverse = xw->term.reverse;
 	if (g.reverse) {
@@ -554,7 +557,15 @@ static void xdrawcursor(struct st_window *xw)
 		g.bg = t;
 	}
 
-	xdraw_glyphs(xw, xw->term.c.pos, g, &g, 1);
+	if (xw->focused) {
+		xdraw_glyphs(xw, xw->term.c.pos, g, &g, 1, false);
+	} else {
+		XSetForeground(xw->dpy, xw->gc, xw->col[defaultcs].pixel);
+		XDrawRectangle(xw->dpy, xw->buf, xw->gc,
+			       borderpx + xw->term.c.pos.x * xw->charsize.x,
+			       borderpx + xw->term.c.pos.y * xw->charsize.y,
+			       xw->charsize.x, xw->charsize.y);
+	}
 }
 
 static struct st_glyph sel_glyph(struct st_window *xw, unsigned x, unsigned y)
@@ -591,7 +602,8 @@ static void draw(struct st_window *xw)
 				x2++;
 
 			xdraw_glyphs(xw, pos, base,
-				     term_pos(&xw->term, pos), x2 - pos.x);
+				     term_pos(&xw->term, pos), x2 - pos.x,
+				     true);
 			pos.x = x2;
 		}
 	}
@@ -1221,9 +1233,11 @@ static void focus(struct st_window *xw, XEvent *ev)
 	if (ev->type == FocusIn) {
 		XSetICFocus(xw->xic);
 		xw->focused = 1;
+		xw->term.dirty = true;
 		xseturgency(&xw->term, 0);
 	} else {
 		XUnsetICFocus(xw->xic);
+		xw->term.dirty = true;
 		xw->focused = 0;
 	}
 }
@@ -1400,7 +1414,7 @@ int main(int argc, char *argv[])
 	setlocale(LC_CTYPE, "");
 	XSetLocaleModifiers("");
 	term_init(&xw.term, 80, 24, shell, opt_cmd, opt_io, xw.win,
-		  defaultfg, defaultbg, defaultcs, defaultucs);
+		  defaultfg, defaultbg, defaultcs);
 	xinit(&xw);
 	run(&xw);
 
