@@ -49,6 +49,7 @@ struct st_font {
 
 struct st_fontcache {
 	XftFont		*font;
+	unsigned	c;
 	enum {
 		FRC_NORMAL,
 		FRC_ITALIC,
@@ -368,9 +369,8 @@ static XftColor *reverse_color(struct st_window *xw, XftColor *color,
 	}
 }
 
-static XftFont *find_font(struct st_window *xw,
-			  struct st_font *font,
-			  long u8char, unsigned flags)
+static XftFont *find_font(struct st_window *xw, struct st_font *font,
+			  unsigned flags, long u8char)
 {
 	FcFontSet *fcsets[] = { font->set };
 	FcPattern *fcpattern, *fontpattern;
@@ -383,8 +383,7 @@ static XftFont *find_font(struct st_window *xw,
 	for (fc = xw->fontcache;
 	     fc < xw->fontcache + ARRAY_SIZE(xw->fontcache) && fc->font;
 	     fc++)
-		if (fc->flags == flags &&
-		    XftCharIndex(xw->dpy, fc->font, u8char))
+		if (fc->flags == flags && fc->c == u8char)
 			return fc->font;
 
 	/*
@@ -407,19 +406,17 @@ static XftFont *find_font(struct st_window *xw,
 
 	xfont = XftFontOpenPattern(xw->dpy, fontpattern);
 
-	if (xfont) {
-		fc = &xw->fontcache[ARRAY_SIZE(xw->fontcache) - 1];
-		if (fc->font)
-			XftFontClose(xw->dpy, fc->font);
+	fc = &xw->fontcache[ARRAY_SIZE(xw->fontcache) - 1];
+	if (fc->font)
+		XftFontClose(xw->dpy, fc->font);
 
-		fc = xw->fontcache;
+	fc = xw->fontcache;
+	memmove(fc + 1, fc,
+		(ARRAY_SIZE(xw->fontcache) - 1) * sizeof(*fc));
 
-		memmove(fc + 1, fc,
-			(ARRAY_SIZE(xw->fontcache) - 1) * sizeof(*fc));
-
-		fc->flags = flags;
-		fc->font = xfont;
-	}
+	fc->font = xfont;
+	fc->c = u8char;
+	fc->flags = flags;
 
 	FcCharSetDestroy(fccharset);
 	FcPatternDestroy(fcpattern);
