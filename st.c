@@ -769,12 +769,17 @@ static void mousereport(struct st_window *xw, XEvent *ev)
 static void bpress(struct st_window *xw, XEvent *ev)
 {
 	struct st_term *term = &xw->term;
+	unsigned type, state;
 
 	if (term->mousebtn || term->mousemotion) {
 		mousereport(xw, ev);
-	} else if (ev->xbutton.button == Button1) {
-		unsigned type = SEL_REGULAR;
-		unsigned state = ev->xbutton.state & ~Button1Mask;
+		return;
+	}
+
+	switch (ev->xbutton.button) {
+	case Button1:
+		type = SEL_REGULAR;
+		state = ev->xbutton.state & ~Button1Mask;
 
 		for (unsigned i = 1; i < ARRAY_SIZE(selmasks); i++)
 			if (match(selmasks[i], state)) {
@@ -785,16 +790,14 @@ static void bpress(struct st_window *xw, XEvent *ev)
 		xw->mousemotion = 1;
 		term_sel_start(term, type, mouse_pos(xw, ev));
 		gettimeofday(&xw->mousedown, NULL);
-	} else if (ev->xbutton.button == Button4) {
+		break;
+	case Button4:
 		ttywrite(term, "\031", 1);
-	} else if (ev->xbutton.button == Button5) {
+		break;
+	case Button5:
 		ttywrite(term, "\005", 1);
+		break;
 	}
-}
-
-static bool isword(unsigned c)
-{
-	return c && !isspace(c);
 }
 
 static void brelease(struct st_window *xw, XEvent *ev)
@@ -807,43 +810,35 @@ static void brelease(struct st_window *xw, XEvent *ev)
 		return;
 	}
 
-	if (ev->xbutton.button == Button2) {
-		selpaste(xw, NULL);
-	} else if (ev->xbutton.button == Button1) {
-		struct coord end = mouse_pos(xw, ev);
+	switch (ev->xbutton.button) {
+	case Button1:
+		xw->mousemotion = 0;
 
 		memmove(xw->mouseup + 1,
 			xw->mouseup, sizeof(struct timeval) * 2);
 		gettimeofday(xw->mouseup, NULL);
 
-		if (sel->start.x == end.x &&
-		    sel->start.y == end.y) {
-			if (TIMEDIFF(xw->mouseup[0], xw->mouseup[2]) <
-			    tripleclicktimeout) {
-				/* triple click on the line */
-				sel->start.x = 0;
-				end.x = term->size.x - 1;
-			} else if (TIMEDIFF(xw->mouseup[0], xw->mouseup[1]) <
-				   doubleclicktimeout) {
-				/* double click to select word */
-				while (sel->start.x &&
-				       isword(term_pos(term, sel->start)[-1].c))
-					sel->start.x--;
+		struct coord end = mouse_pos(xw, ev);
 
-				while (end.x < term->size.x - 1 &&
-				       isword(term_pos(term, end)[1].c))
-					end.x++;
-			} else if (TIMEDIFF(xw->mouseup[0], xw->mousedown) <
-				   doubleclicktimeout) {
-				sel->type = SEL_NONE;
-			}
-		}
+		if (!(sel->start.x == end.x &&
+		      sel->start.y == end.y))
+			term_sel_update(term, end);
+		else if (TIMEDIFF(xw->mouseup[0], xw->mouseup[2]) <
+			   tripleclicktimeout)
+			term_sel_line(term, end);
+		else if (TIMEDIFF(xw->mouseup[0], xw->mouseup[1]) <
+			 doubleclicktimeout)
+			term_sel_word(term, end);
+		else if (TIMEDIFF(xw->mouseup[0], xw->mousedown) <
+			 doubleclicktimeout)
+			term_sel_stop(term);
 
-		xw->mousemotion = 0;
-		term_sel_end(term, end);
-		term_sel_copy(term);
 		if (sel->clip)
 			xsetsel(xw);
+		break;
+	case Button2:
+		selpaste(xw, NULL);
+		break;
 	}
 }
 
@@ -857,7 +852,7 @@ static void bmotion(struct st_window *xw, XEvent *ev)
 	}
 
 	if (xw->mousemotion)
-		term_sel_end(term, mouse_pos(xw, ev));
+		term_sel_update(term, mouse_pos(xw, ev));
 }
 
 /* Resizing code */

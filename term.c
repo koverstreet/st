@@ -87,7 +87,7 @@ bool term_selected(struct st_selection *sel, int x, int y)
 	return false;
 }
 
-void term_sel_copy(struct st_term *term)
+static void term_sel_copy(struct st_term *term)
 {
 	struct st_selection *sel = &term->sel;
 	unsigned char *str = NULL, *ptr;
@@ -142,7 +142,7 @@ void term_sel_start(struct st_term *term, unsigned type, struct coord start)
 	term->dirty = true;
 }
 
-void term_sel_end(struct st_term *term, struct coord end)
+void term_sel_update(struct st_term *term, struct coord end)
 {
 	struct st_selection *sel = &term->sel;
 
@@ -158,6 +158,7 @@ void term_sel_end(struct st_term *term, struct coord end)
 		     sel->p1.x > sel->p2.x))
 			swap(sel->p1, sel->p2);
 
+		term_sel_copy(term);
 		break;
 	case SEL_RECTANGULAR:
 		if (sel->p1.x > sel->p2.x)
@@ -165,10 +166,52 @@ void term_sel_end(struct st_term *term, struct coord end)
 		if (sel->p1.y > sel->p2.y)
 			swap(sel->p1.y, sel->p2.y);
 
+		term_sel_copy(term);
 		break;
 	}
 
 	term->dirty = true;
+}
+
+void term_sel_stop(struct st_term *term)
+{
+	term->sel.type = SEL_NONE;
+	term->dirty = true;
+}
+
+static bool isword(unsigned c)
+{
+	static const char not_word[] = "*.!?;=&#$%^[](){}<>";
+
+	return c && !isspace(c) && !strchr(not_word, c);
+}
+
+void term_sel_word(struct st_term *term, struct coord pos)
+{
+	struct st_selection *sel = &term->sel;
+
+	sel->start = pos;
+
+	while (sel->start.x &&
+	       isword(term_pos(term, sel->start)[-1].c))
+		sel->start.x--;
+
+	while (pos.x < term->size.x - 1 &&
+	       isword(term_pos(term, pos)[1].c))
+		pos.x++;
+
+	term_sel_update(term, pos);
+}
+
+void term_sel_line(struct st_term *term, struct coord pos)
+{
+	struct st_selection *sel = &term->sel;
+
+	sel->start = pos;
+	sel->start.x = 0;
+	pos.x = term->size.x - 1;
+
+	term_sel_update(term, pos);
 }
 
 /* Escape handling */

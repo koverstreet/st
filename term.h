@@ -193,13 +193,15 @@ struct st_term {
 	void		(*seturgent)(struct st_term *, int);
 };
 
-bool term_selected(struct st_selection *sel, int x, int y);
-void term_sel_copy(struct st_term *term);
-void term_sel_start(struct st_term *term, unsigned type, struct coord start);
-void term_sel_end(struct st_term *term, struct coord end);
+bool term_selected(struct st_selection *, int, int);
+void term_sel_start(struct st_term *, unsigned, struct coord);
+void term_sel_update(struct st_term *, struct coord);
+void term_sel_stop(struct st_term *);
+void term_sel_word(struct st_term *, struct coord);
+void term_sel_line(struct st_term *, struct coord);
 
-void term_echo(struct st_term *term, char *buf, int len);
-void term_read(struct st_term *term);
+void term_echo(struct st_term *, char *, int);
+void term_read(struct st_term *);
 
 void term_resize(struct st_term *term, struct coord size);
 void term_shutdown(struct st_term *term);
