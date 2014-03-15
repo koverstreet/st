@@ -424,15 +424,69 @@ static XftFont *find_font(struct st_window *xw, struct st_font *font,
 	return xfont;
 }
 
-static void xdraw_glyphs(struct st_window *xw, struct coord pos,
-			 struct st_glyph base, struct st_glyph *glyphs,
-			 unsigned charlen, bool clear_border)
+static void do_xdraw_glyphs(struct st_window *xw, struct coord pos,
+			    struct st_glyph base, struct st_glyph *glyphs,
+			    unsigned nglyphs, struct st_font *font,
+			    unsigned frcflags, XftColor *fg)
 {
 	unsigned winx = borderpx + pos.x * xw->charsize.x, xp = winx;
 	unsigned winy = borderpx + pos.y * xw->charsize.y;
+	unsigned xglyphs[1024], nxglyphs = 0, i = 0, ucs;
+
+	while (i < nglyphs) {
+		bool found = true;
+
+		while (i < nglyphs && nxglyphs < ARRAY_SIZE(xglyphs)) {
+			ucs = glyphs[i].c ?: ' ';
+			xglyphs[nxglyphs] = XftCharIndex(xw->dpy, font->match, ucs);
+			if (!xglyphs[nxglyphs]) {
+				found = false;
+				break;
+			}
+			nxglyphs++;
+			i++;
+		}
+
+		if (nxglyphs) {
+			XftDrawGlyphs(xw->draw, fg, font->match, xp,
+				      winy + font->match->ascent,
+				      xglyphs, nxglyphs);
+			xp += xw->charsize.x * nxglyphs;
+			nxglyphs = 0;
+		}
+
+		if (!found) {
+			unsigned glyph;
+			XftFont *xfont;
+
+			xfont = find_font(xw, font, frcflags, ucs);
+			if (xfont) {
+				glyph = XftCharIndex(xw->dpy, xfont, ucs);
+			} else {
+				xfont = font->match;
+				glyph = XftCharIndex(xw->dpy, xfont, 0xFFFD) ?:
+					XftCharIndex(xw->dpy, xfont, ' ');
+			}
+
+			XftDrawGlyphs(xw->draw, fg, xfont, xp,
+				      winy + xfont->ascent, &glyph, 1);
+
+			xp += xw->charsize.x;
+			i++;
+		}
+	}
+
+	if (base.underline)
+		XftDrawRect(xw->draw, fg, winx, winy + font->match->ascent + 1,
+			    nglyphs * xw->charsize.x, 1);
+}
+
+static void xdraw_glyphs(struct st_window *xw, struct coord pos,
+			 struct st_glyph base, struct st_glyph *glyphs,
+			 unsigned nglyphs, bool clear_border)
+{
 	unsigned frcflags = FRC_NORMAL;
 	struct st_font *font = &xw->font;
-	unsigned xglyphs[1024], nxglyphs = 0;
 	XftColor *fg = &xw->col[base.fg];
 	XftColor *bg = &xw->col[base.bg];
 	XftColor revfg, revbg;
@@ -478,61 +532,8 @@ static void xdraw_glyphs(struct st_window *xw, struct coord pos,
 	if (base.reverse)
 		swap(bg, fg);
 
-	xclear(xw, bg, pos, charlen, clear_border);
-
-	for (unsigned i = 0; i < charlen; i++) {
-		/*
-		 * Search for the range in the to be printed string of glyphs
-		 * that are in the main font. Then print that range. If
-		 * some glyph is found that is not in the font, do the
-		 * fallback dance.
-		 */
-		XftFont *xfont = font->match;
-		bool found;
-		unsigned ucs = glyphs[i].c;
-
-		if (!ucs)
-			ucs = ' ';
-retry:
-		xglyphs[nxglyphs] = XftCharIndex(xw->dpy, xfont, ucs);
-		found = xglyphs[nxglyphs];
-
-		if (found)
-			nxglyphs++;
-
-		if ((!found && nxglyphs) || nxglyphs == ARRAY_SIZE(xglyphs)) {
-			XftDrawGlyphs(xw->draw, fg, xfont, xp,
-				      winy + xfont->ascent, xglyphs, nxglyphs);
-			xp += xw->charsize.x * nxglyphs;
-			nxglyphs = 0;
-		}
-
-		if (!found) {
-			xfont = find_font(xw, font, ucs, frcflags);
-			if (!xfont) {
-				if (ucs != 0xFFFD)
-					ucs = 0xFFFD;
-				else
-					ucs = ' ';
-				goto retry;
-			}
-
-			xglyphs[nxglyphs] = XftCharIndex(xw->dpy, xfont, ucs);
-
-			XftDrawGlyphs(xw->draw, fg, xfont, xp,
-				      winy + xfont->ascent, xglyphs, 1);
-
-			xp += xw->charsize.x;
-		}
-	}
-
-	if (nxglyphs)
-		XftDrawGlyphs(xw->draw, fg, font->match, xp,
-			      winy + font->match->ascent, xglyphs, nxglyphs);
-
-	if (base.underline)
-		XftDrawRect(xw->draw, fg, winx, winy + font->match->ascent + 1,
-			    charlen * xw->charsize.x, 1);
+	xclear(xw, bg, pos, nglyphs, clear_border);
+	do_xdraw_glyphs(xw, pos, base, glyphs, nglyphs, font, frcflags, fg);
 }
 
 static void xdrawcursor(struct st_window *xw)
