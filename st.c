@@ -1075,6 +1075,7 @@ static void xunloadfonts(struct st_window *xw)
 	FcFontSetDestroy(xw->ibfont.set);
 }
 
+__attribute((unused))
 static void xzoom(struct st_window *xw, const union st_arg *arg)
 {
 	xw->fontzoom = clamp(xw->fontzoom + arg->i, -8, 8);
