@@ -462,13 +462,15 @@ static void tsetchar(struct st_term *term, unsigned c, struct coord pos)
 	};
 
 	struct st_glyph *g = term_pos(term, pos);
+	const char *v;
 
 	/*
 	 * The table is proudly stolen from rxvt.
 	 */
-	if (term->c.attr.gfx)
-		if (c >= 0x41 && c <= 0x7e && vt100_0[c - 0x41])
-			c = *vt100_0[c - 0x41];
+	if (term->c.attr.gfx &&
+	    c >= 0x41 && c <= 0x7e &&
+	    (v = vt100_0[c - 0x41]))
+		FcUtf8ToUcs4((unsigned char *) v, &c, strlen(v));
 
 	term->dirty = true;
 	*g = term->c.attr;
