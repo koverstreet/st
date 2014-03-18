@@ -137,7 +137,6 @@ struct st_selection {
 		SEL_RECTANGULAR,
 	}		type;
 
-	struct coord	start, end;
 	struct coord	p1, p2;
 
 	char		*clip;
@@ -180,6 +179,9 @@ struct st_term {
 	unsigned	mousesgr:1;
 	unsigned	numlock:1;
 
+	struct coord	mousepos;
+	unsigned	mousebutton;
+
 	int		esc;	/* escape state flags */
 	struct csi_escape csiescseq;
 	struct str_escape strescseq;
@@ -194,14 +196,15 @@ struct st_term {
 };
 
 bool term_selected(struct st_selection *, int, int);
-void term_sel_start(struct st_term *, unsigned, struct coord);
-void term_sel_update(struct st_term *, struct coord);
+void term_sel_update(struct st_term *, unsigned, struct coord, struct coord);
 void term_sel_stop(struct st_term *);
 void term_sel_word(struct st_term *, struct coord);
 void term_sel_line(struct st_term *, struct coord);
 
 void term_echo(struct st_term *, char *, int);
 void term_read(struct st_term *);
+void term_mousereport(struct st_term *, struct coord,
+		      unsigned, unsigned, unsigned);
 
 void term_resize(struct st_term *term, struct coord size);
 void term_shutdown(struct st_term *term);

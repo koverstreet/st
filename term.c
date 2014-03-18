@@ -1,10 +1,12 @@
 /* See LICENSE for licence details. */
+#include <assert.h>
 #include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <pwd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <X11/X.h> // XXX
 
 #include <fontconfig/fontconfig.h>
 
@@ -29,10 +31,10 @@ static void selscroll(struct st_term *term, int orig, int n)
 	if (sel->type == SEL_NONE)
 		return;
 
-	if (BETWEEN(sel->start.y, orig, term->bot) ||
-	    BETWEEN(sel->end.y, orig, term->bot)) {
-		if ((sel->start.y += n) > term->bot ||
-		    (sel->end.y += n) < term->top) {
+	if (BETWEEN(sel->p1.y, orig, term->bot) ||
+	    BETWEEN(sel->p2.y, orig, term->bot)) {
+		if ((sel->p1.y += n) > term->bot ||
+		    (sel->p2.y += n) < term->top) {
 			sel->type = SEL_NONE;
 			return;
 		}
@@ -41,25 +43,22 @@ static void selscroll(struct st_term *term, int orig, int n)
 		case SEL_NONE:
 			break;
 		case SEL_REGULAR:
-			if (sel->start.y < term->top) {
-				sel->start.y = term->top;
-				sel->start.x = 0;
+			if (sel->p1.y < term->top) {
+				sel->p1.y = term->top;
+				sel->p1.x = 0;
 			}
-			if (sel->end.y > term->bot) {
-				sel->end.y = term->bot;
-				sel->end.x = term->size.y;
+			if (sel->p2.y > term->bot) {
+				sel->p2.y = term->bot;
+				sel->p2.x = term->size.y;
 			}
 			break;
 		case SEL_RECTANGULAR:
-			if (sel->start.y < term->top)
-				sel->start.y = term->top;
-			if (sel->end.y > term->bot)
-				sel->end.y = term->bot;
+			if (sel->p1.y < term->top)
+				sel->p1.y = term->top;
+			if (sel->p2.y > term->bot)
+				sel->p2.y = term->bot;
 			break;
 		};
-
-		sel->p1 = sel->start;
-		sel->p2 = sel->end;
 	}
 }
 
@@ -132,25 +131,17 @@ out:
 	sel->clip = (char *) str;
 }
 
-void term_sel_start(struct st_term *term, unsigned type, struct coord start)
+void term_sel_update(struct st_term *term, unsigned type,
+		     struct coord start, struct coord end)
 {
 	struct st_selection *sel = &term->sel;
 
-	sel->type = type;
-	sel->start = sel->end = sel->p1 = sel->p2 = start;
-
-	term->dirty = true;
-}
-
-void term_sel_update(struct st_term *term, struct coord end)
-{
-	struct st_selection *sel = &term->sel;
-
-	sel->p1 = sel->start;
-	sel->p2 = sel->end = end;
+	sel->p1 = start;
+	sel->p2 = end;
 
 	switch (sel->type) {
 	case SEL_NONE:
+		sel->type = type;
 		break;
 	case SEL_REGULAR:
 		if (sel->p1.y > sel->p2.y ||
@@ -173,12 +164,6 @@ void term_sel_update(struct st_term *term, struct coord end)
 	term->dirty = true;
 }
 
-void term_sel_stop(struct st_term *term)
-{
-	term->sel.type = SEL_NONE;
-	term->dirty = true;
-}
-
 static bool isword(unsigned c)
 {
 	static const char not_word[] = "*.!?;=&#$%^[](){}<>";
@@ -188,30 +173,33 @@ static bool isword(unsigned c)
 
 void term_sel_word(struct st_term *term, struct coord pos)
 {
-	struct st_selection *sel = &term->sel;
+	struct coord start = pos;
 
-	sel->start = pos;
-
-	while (sel->start.x &&
-	       isword(term_pos(term, sel->start)[-1].c))
-		sel->start.x--;
+	while (start.x &&
+	       isword(term_pos(term, start)[-1].c))
+		start.x--;
 
 	while (pos.x < term->size.x - 1 &&
 	       isword(term_pos(term, pos)[1].c))
 		pos.x++;
 
-	term_sel_update(term, pos);
+	term_sel_update(term, SEL_REGULAR, start, pos);
 }
 
 void term_sel_line(struct st_term *term, struct coord pos)
 {
-	struct st_selection *sel = &term->sel;
+	struct coord start = pos;
 
-	sel->start = pos;
-	sel->start.x = 0;
+	start.x = 0;
 	pos.x = term->size.x - 1;
 
-	term_sel_update(term, pos);
+	term_sel_update(term, SEL_REGULAR, start, pos);
+}
+
+void term_sel_stop(struct st_term *term)
+{
+	term->sel.type = SEL_NONE;
+	term->dirty = true;
 }
 
 /* Escape handling */
@@ -1363,6 +1351,52 @@ void term_read(struct st_term *term)
 
 	/* keep any uncomplete utf8 char for the next call */
 	memmove(term->cmdbuf, ptr, term->cmdbuflen);
+}
+
+void term_mousereport(struct st_term *term, struct coord pos,
+		      unsigned type, unsigned button, unsigned state)
+{
+	char buf[40];
+	int len;
+
+	/* from urxvt */
+	if (type == MotionNotify) {
+		if (!term->mousemotion ||
+		    (pos.x == term->mousepos.x &&
+		     pos.y == term->mousepos.y))
+			return;
+
+		button = term->mousebutton + 32;
+		term->mousepos = pos;
+	} else if (!term->mousesgr &&
+		   (type == ButtonRelease ||
+		    button == AnyButton)) {
+		button = 3;
+	} else {
+		button -= Button1;
+		if (button >= 3)
+			button += 64 - 3;
+		if (type == ButtonPress) {
+			term->mousebutton = button;
+			term->mousepos = pos;
+		}
+	}
+
+	button += (state & ShiftMask ? 4 : 0) +
+		(state & Mod4Mask ? 8 : 0) +
+		(state & ControlMask ? 16 : 0);
+
+	if (term->mousesgr)
+		len = snprintf(buf, sizeof(buf), "\033[<%d;%d;%d%c",
+			       button, pos.x + 1, pos.y + 1,
+			       type == ButtonRelease ? 'm' : 'M');
+	else if (pos.x < 223 && pos.y < 223)
+		len = snprintf(buf, sizeof(buf), "\033[M%c%c%c",
+			       32 + button, 32 + pos.x + 1, 32 + pos.y + 1);
+	else
+		return;
+
+	ttywrite(term, buf, len);
 }
 
 /* Resize code */

@@ -126,12 +126,12 @@ struct st_window {
 	struct coord	fixedsize;	/* kill? */
 	struct coord	charsize;
 
-	struct coord	mousepos;
-	unsigned	mousebutton;
-	struct timeval	mousedown;
+	struct timeval	mousedown_time;
+	struct coord	mousedown_pos;
 	struct timeval	mouseup[3];
+	unsigned	sel_type;
 
-	unsigned	mousemotion:1;
+	unsigned	mousedown:1;
 	unsigned	visible:1;
 	unsigned	focused:1;
 };
@@ -276,7 +276,7 @@ static void clippaste(struct st_window *xw, const union st_arg *dummy)
 
 static void selclear(struct st_window *xw, XEvent *e)
 {
-	term_sel_start(&xw->term, SEL_NONE, ORIGIN);
+	term_sel_stop(&xw->term);
 }
 
 static void selrequest(struct st_window *xw, XEvent *e)
@@ -720,77 +720,37 @@ static struct coord mouse_pos(struct st_window *xw, XEvent *ev)
 	};
 }
 
-static void mousereport(struct st_window *xw, XEvent *ev)
-{
-	char buf[40];
-	int button = ev->xbutton.button, state = ev->xbutton.state, len;
-	struct coord pos = mouse_pos(xw, ev);
-
-	/* from urxvt */
-	if (ev->xbutton.type == MotionNotify) {
-		if (!xw->term.mousemotion ||
-		    (pos.x == xw->mousepos.x &&
-		     pos.y == xw->mousepos.y))
-			return;
-
-		button = xw->mousebutton + 32;
-		xw->mousepos = pos;
-	} else if (!xw->term.mousesgr &&
-		   (ev->xbutton.type == ButtonRelease ||
-		    button == AnyButton)) {
-		button = 3;
-	} else {
-		button -= Button1;
-		if (button >= 3)
-			button += 64 - 3;
-		if (ev->xbutton.type == ButtonPress) {
-			xw->mousebutton = button;
-			xw->mousepos = pos;
-		}
-	}
-
-	button += (state & ShiftMask ? 4 : 0) +
-		(state & Mod4Mask ? 8 : 0) +
-		(state & ControlMask ? 16 : 0);
-
-	if (xw->term.mousesgr)
-		len = snprintf(buf, sizeof(buf), "\033[<%d;%d;%d%c",
-			       button, pos.x + 1, pos.y + 1,
-			       ev->xbutton.type ==
-			       ButtonRelease ? 'm' : 'M');
-	else if (pos.x < 223 && pos.y < 223)
-		len = snprintf(buf, sizeof(buf), "\033[M%c%c%c",
-			       32 + button, 32 + pos.x + 1, 32 + pos.y + 1);
-	else
-		return;
-
-	ttywrite(&xw->term, buf, len);
-}
-
 static void bpress(struct st_window *xw, XEvent *ev)
 {
 	struct st_term *term = &xw->term;
-	unsigned type, state;
 
 	if (term->mousebtn || term->mousemotion) {
-		mousereport(xw, ev);
+		term_mousereport(term, mouse_pos(xw, ev),
+				 ev->xbutton.type,
+				 ev->xbutton.button,
+				 ev->xbutton.state);
 		return;
 	}
 
 	switch (ev->xbutton.button) {
 	case Button1:
-		type = SEL_REGULAR;
-		state = ev->xbutton.state & ~Button1Mask;
+		gettimeofday(&xw->mousedown_time, NULL);
+		xw->mousedown_pos = mouse_pos(xw, ev);
+		xw->mousedown = 1;
+
+		/* Clear previous selection */
+		term_sel_stop(term);
+
+		/* Get ready for another */
+		xw->sel_type = SEL_REGULAR;
 
 		for (unsigned i = 1; i < ARRAY_SIZE(selmasks); i++)
-			if (match(selmasks[i], state)) {
-				type = i;
+			if (match(selmasks[i],
+				  ev->xbutton.state & ~Button1Mask)) {
+				xw->sel_type = i;
 				break;
 			}
 
-		xw->mousemotion = 1;
-		term_sel_start(term, type, mouse_pos(xw, ev));
-		gettimeofday(&xw->mousedown, NULL);
 		break;
 	case Button4:
 		ttywrite(term, "\031", 1);
@@ -807,13 +767,16 @@ static void brelease(struct st_window *xw, XEvent *ev)
 	struct st_selection *sel = &term->sel;
 
 	if (term->mousebtn || term->mousemotion) {
-		mousereport(xw, ev);
+		term_mousereport(term, mouse_pos(xw, ev),
+				 ev->xbutton.type,
+				 ev->xbutton.button,
+				 ev->xbutton.state);
 		return;
 	}
 
 	switch (ev->xbutton.button) {
 	case Button1:
-		xw->mousemotion = 0;
+		xw->mousedown = 0;
 
 		memmove(xw->mouseup + 1,
 			xw->mouseup, sizeof(struct timeval) * 2);
@@ -821,16 +784,17 @@ static void brelease(struct st_window *xw, XEvent *ev)
 
 		struct coord end = mouse_pos(xw, ev);
 
-		if (!(sel->start.x == end.x &&
-		      sel->start.y == end.y))
-			term_sel_update(term, end);
+		if (!(xw->mousedown_pos.x == end.x &&
+		      xw->mousedown_pos.y == end.y))
+			term_sel_update(term, xw->sel_type,
+					xw->mousedown_pos, end);
 		else if (TIMEDIFF(xw->mouseup[0], xw->mouseup[2]) <
-			   tripleclicktimeout)
+			 tripleclicktimeout)
 			term_sel_line(term, end);
 		else if (TIMEDIFF(xw->mouseup[0], xw->mouseup[1]) <
 			 doubleclicktimeout)
 			term_sel_word(term, end);
-		else if (TIMEDIFF(xw->mouseup[0], xw->mousedown) <
+		else if (TIMEDIFF(xw->mouseup[0], xw->mousedown_time) <
 			 doubleclicktimeout)
 			term_sel_stop(term);
 
@@ -848,12 +812,16 @@ static void bmotion(struct st_window *xw, XEvent *ev)
 	struct st_term *term = &xw->term;
 
 	if (term->mousebtn || term->mousemotion) {
-		mousereport(xw, ev);
+		term_mousereport(term, mouse_pos(xw, ev),
+				 ev->xbutton.type,
+				 ev->xbutton.button,
+				 ev->xbutton.state);
 		return;
 	}
 
-	if (xw->mousemotion)
-		term_sel_update(term, mouse_pos(xw, ev));
+	if (xw->mousedown)
+		term_sel_update(term, xw->sel_type,
+				xw->mousedown_pos, mouse_pos(xw, ev));
 }
 
 /* Resizing code */
