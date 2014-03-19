@@ -21,12 +21,13 @@
 #include <X11/keysym.h>
 #include <X11/Xft/Xft.h>
 #include <fontconfig/fontconfig.h>
+#include <gio/gio.h>
 
 #include "term.h"
 
 #define USAGE \
 	"st " VERSION " (c) 2010-2013 st engineers\n" \
-	"usage: st [-v] [-c class] [-f font] [-g geometry] [-o file]" \
+	"usage: st [-v] [-c class] [-g geometry] [-o file]" \
 	" [-t title] [-w windowid] [-e command ...]\n"
 
 /* XEMBED messages */
@@ -114,8 +115,13 @@ struct st_window {
 	char		*class;
 	char		*embed;
 
+	GSettings	*settings;
+	unsigned	borderpx;
+	unsigned	fps;
+	unsigned	doubleclicktimeout;
+	unsigned	tripleclicktimeout;
+
 	struct st_font	font, bfont, ifont, ibfont;
-	char		*fontname;
 	int		fontzoom;
 	struct st_fontcache fontcache[32];
 
@@ -323,9 +329,9 @@ static void xclear(struct st_window *xw, XftColor *color,
 		   struct coord pos, unsigned charlen,
 		   bool clear_border)
 {
-	unsigned x1 = xw->charsize.x * pos.x + borderpx;
+	unsigned x1 = xw->charsize.x * pos.x + xw->borderpx;
 	unsigned x2 = xw->charsize.x * charlen;
-	unsigned y1 = xw->charsize.y * pos.y + borderpx;
+	unsigned y1 = xw->charsize.y * pos.y + xw->borderpx;
 	unsigned y2 = xw->charsize.y;
 
 	if (clear_border) {
@@ -429,8 +435,8 @@ static void do_xdraw_glyphs(struct st_window *xw, struct coord pos,
 			    unsigned nglyphs, struct st_font *font,
 			    unsigned frcflags, XftColor *fg)
 {
-	unsigned winx = borderpx + pos.x * xw->charsize.x, xp = winx;
-	unsigned winy = borderpx + pos.y * xw->charsize.y;
+	unsigned winx = xw->borderpx + pos.x * xw->charsize.x, xp = winx;
+	unsigned winy = xw->borderpx + pos.y * xw->charsize.y;
 	unsigned xglyphs[1024], nxglyphs = 0, i = 0, ucs;
 
 	while (i < nglyphs) {
@@ -560,8 +566,8 @@ static void xdrawcursor(struct st_window *xw)
 	} else {
 		XSetForeground(xw->dpy, xw->gc, xw->col[defaultcs].pixel);
 		XDrawRectangle(xw->dpy, xw->buf, xw->gc,
-			       borderpx + xw->term.c.pos.x * xw->charsize.x,
-			       borderpx + xw->term.c.pos.y * xw->charsize.y,
+			       xw->borderpx + xw->term.c.pos.x * xw->charsize.x,
+			       xw->borderpx + xw->term.c.pos.y * xw->charsize.y,
 			       xw->charsize.x, xw->charsize.y);
 	}
 }
@@ -713,9 +719,9 @@ static void kpress(struct st_window *xw, XEvent *ev)
 static struct coord mouse_pos(struct st_window *xw, XEvent *ev)
 {
 	return (struct coord) {
-		.x = min((ev->xbutton.x - borderpx) / xw->charsize.x,
+		.x = min((ev->xbutton.x - xw->borderpx) / xw->charsize.x,
 			 xw->term.size.x - 1),
-		.y = min((ev->xbutton.y - borderpx) / xw->charsize.y,
+		.y = min((ev->xbutton.y - xw->borderpx) / xw->charsize.y,
 			 xw->term.size.y - 1),
 	};
 }
@@ -789,13 +795,13 @@ static void brelease(struct st_window *xw, XEvent *ev)
 			term_sel_update(term, xw->sel_type,
 					xw->mousedown_pos, end);
 		else if (TIMEDIFF(xw->mouseup[0], xw->mouseup[2]) <
-			 tripleclicktimeout)
+			 xw->tripleclicktimeout)
 			term_sel_line(term, end);
 		else if (TIMEDIFF(xw->mouseup[0], xw->mouseup[1]) <
-			 doubleclicktimeout)
+			 xw->doubleclicktimeout)
 			term_sel_word(term, end);
 		else if (TIMEDIFF(xw->mouseup[0], xw->mousedown_time) <
-			 doubleclicktimeout)
+			 xw->doubleclicktimeout)
 			term_sel_stop(term);
 
 		if (sel->clip)
@@ -850,8 +856,8 @@ static void cresize(struct st_window *xw, unsigned width, unsigned height)
 	if (height != 0)
 		xw->winsize.y = height;
 
-	size.x = (xw->winsize.x - 2 * borderpx) / xw->charsize.x;
-	size.y = (xw->winsize.y - 2 * borderpx) / xw->charsize.y;
+	size.x = (xw->winsize.x - 2 * xw->borderpx) / xw->charsize.x;
+	size.y = (xw->winsize.y - 2 * xw->borderpx) / xw->charsize.y;
 
 	/* XXX: should probably be elsewhere */
 	xw->term.ttysize.x = max(1U, size.x * xw->charsize.x);
@@ -923,8 +929,8 @@ static void xhints(struct st_window *xw)
 		sizeh->height = xw->winsize.y;
 		sizeh->width_inc = xw->charsize.x;
 		sizeh->height_inc = xw->charsize.y;
-		sizeh->base_height = 2 * borderpx;
-		sizeh->base_width = 2 * borderpx;
+		sizeh->base_height = 2 * xw->borderpx;
+		sizeh->base_width = 2 * xw->borderpx;
 	} else {
 		sizeh->flags = PMaxSize | PMinSize;
 		sizeh->min_width = sizeh->max_width = xw->fixedsize.x;
@@ -961,10 +967,11 @@ static int xloadfont(struct st_window *xw, struct st_font *f,
 	return 0;
 }
 
-static void xloadfonts(struct st_window *xw, const char *fontstr, int zoom)
+static void xloadfonts(struct st_window *xw, int zoom)
 {
 	FcPattern *pattern;
 	double pixelsize;
+	char *fontstr = g_settings_get_string(xw->settings, "font");
 
 	if (fontstr[0] == '-')
 		pattern = XftXlfdParse(fontstr, False, False);
@@ -1013,6 +1020,7 @@ static void xloadfonts(struct st_window *xw, const char *fontstr, int zoom)
 		die("st: can't open font %s\n", fontstr);
 
 	FcPatternDestroy(pattern);
+	free(fontstr);
 }
 
 static void xunloadfonts(struct st_window *xw)
@@ -1045,7 +1053,7 @@ static void xzoom(struct st_window *xw, const union st_arg *arg)
 	xw->fontzoom = clamp(xw->fontzoom + arg->i, -8, 8);
 
 	xunloadfonts(xw);
-	xloadfonts(xw, xw->fontname, xw->fontzoom);
+	xloadfonts(xw, xw->fontzoom);
 	cresize(xw, 0, 0);
 	xw->term.dirty = true;
 }
@@ -1067,7 +1075,7 @@ static void xinit(struct st_window *xw)
 	if (!FcInit())
 		die("Could not init fontconfig.\n");
 
-	xloadfonts(xw, xw->fontname, 0);
+	xloadfonts(xw, 0);
 
 	/* colors */
 	xw->cmap = XDefaultColormap(xw->dpy, xw->scr);
@@ -1085,8 +1093,8 @@ static void xinit(struct st_window *xw)
 		xw->winsize = xw->fixedsize;
 	} else {
 		/* window - default size */
-		xw->winsize.x = 2 * borderpx + xw->term.size.x * xw->charsize.x;
-		xw->winsize.y = 2 * borderpx + xw->term.size.y * xw->charsize.y;
+		xw->winsize.x = 2 * xw->borderpx + xw->term.size.x * xw->charsize.x;
+		xw->winsize.y = 2 * xw->borderpx + xw->term.size.y * xw->charsize.y;
 		xw->fixedsize.x = 0;
 		xw->fixedsize.y = 0;
 	}
@@ -1293,7 +1301,7 @@ static void run(struct st_window *xw)
 		if (timeout.tv_sec < 0) {
 			draw(xw);
 			next_redraw = now;
-			next_redraw.tv_usec += 1000 * 1000 / xfps;
+			next_redraw.tv_usec += 1000 * 1000 / xw->fps;
 			tv = NULL;
 		} else {
 			tv = &timeout;
@@ -1310,13 +1318,17 @@ int main(int argc, char *argv[])
 	char *opt_io = NULL;
 
 	memset(&xw, 0, sizeof(xw));
-
 	xw.default_title	= "st";
 	xw.class		= TERMNAME;
-	xw.fontname		= font;
 	xw.term.setcolorname	= xsetcolorname;
 	xw.term.settitle	= xsettitle;
 	xw.term.seturgent	= xseturgency;
+
+	xw.settings		= g_settings_new("org.evilpiepirate.st");
+	xw.borderpx		= g_settings_get_uint(xw.settings, "borderpx");
+	xw.fps			= g_settings_get_uint(xw.settings, "fps");
+	xw.doubleclicktimeout	= g_settings_get_uint(xw.settings, "doubleclicktimeout");
+	xw.tripleclicktimeout	= g_settings_get_uint(xw.settings, "tripleclicktimeout");
 
 	for (i = 1; i < argc; i++) {
 		switch (argv[i][0] != '-' || argv[i][2] ? -1 : argv[i][1]) {
@@ -1329,10 +1341,6 @@ int main(int argc, char *argv[])
 			if (++i < argc)
 				opt_cmd = &argv[i];
 			goto run;
-		case 'f':
-			if (++i < argc)
-				xw.fontname = argv[i];
-			break;
 		case 'g':
 			if (++i >= argc)
 				break;

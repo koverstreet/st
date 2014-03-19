@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+    <schema id="org.evilpiepirate.st" path="/org/evilpiepirate/st/">
+	<key name="font" type="s">
+	    <default>
+		"DejaVu Sans Mono-15:book:hintstyle=1:dpi=96:rgba=rgb"
+	    </default>
+	</key>
+
+	<key name="borderpx" type="u">
+	    <range min="0" max="100"/>
+	    <default>2</default>
+	</key>
+
+	<key name="fps" type="u">
+	    <range min="0" max="1000"/>
+	    <default>60</default>
+	</key>
+
+	<key name="doubleclicktimeout" type="u">
+	    <range min="0" max="1000"/>
+	    <default>300</default>
+	</key>
+
+	<key name="tripleclicktimeout" type="u">
+	    <range min="0" max="1000"/>
+	    <default>600</default>
+	</key>
+    </schema>
+</schemalist>

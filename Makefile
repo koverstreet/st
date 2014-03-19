@@ -16,22 +16,23 @@ CPPFLAGS	:= -DVERSION=\"${VERSION}\"			\
 	-D_BSD_SOURCE -D_XOPEN_SOURCE=600			\
 	-I. -I/usr/include -I${X11INC} 				\
 	$(shell pkg-config --cflags fontconfig) 		\
-	$(shell pkg-config --cflags freetype2)
+	$(shell pkg-config --cflags freetype2)			\
+	$(shell pkg-config --cflags gio-2.0)
 LDFLAGS 	:= -g -L/usr/lib -L$(X11LIB)
 LDLIBS		:= -lm -lc -lX11 -lutil -lXft			\
 	 $(shell pkg-config --libs fontconfig)			\
-	 $(shell pkg-config --libs freetype2)
-
-all: st
+	 $(shell pkg-config --libs freetype2)			\
+	 $(shell pkg-config --libs gio-2.0)
 
 OBJS = st.o term.o
 DEP_FILES := $(wildcard *.d)
 
-ifneq ($(DEP_FILES),)
-	-include $(DEP_FILES)
-endif
-
+all: st
 st: $(OBJS)
+
+#ifneq ($(DEP_FILES),)
+#	-include $(DEP_FILES)
+#endif
 
 %.o %.d: %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MD -MP -MF $*.d -c $< -o $*.o
