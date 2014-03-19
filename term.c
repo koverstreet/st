@@ -95,7 +95,7 @@ static void term_sel_copy(struct st_term *term)
 		goto out;
 
 	ptr = str = xmalloc((sel->p2.y - sel->p1.y + 1) *
-			    term->size.y * UTF_SIZ);
+			    term->size.x * UTF_SIZ);
 
 	/* append every set & selected glyph to the selection */
 	for (unsigned y = sel->p1.y; y <= sel->p2.y; y++) {
@@ -121,8 +121,11 @@ static void term_sel_copy(struct st_term *term)
 				*ptr++ = ' ';
 		}
 
-		/* \n at the end of every selected line except for the last one */
-		if (y < sel->p2.y)
+		/*
+		 * XXX: this logic is wrong, we need to remember when there's a
+		 * newline at the end of the line
+		 */
+		if (y < sel->p2.y && last < &term->line[y][term->size.x - 1])
 			*ptr++ = '\r';
 	}
 	*ptr = 0;
@@ -139,9 +142,12 @@ void term_sel_update(struct st_term *term, unsigned type,
 	sel->p1 = start;
 	sel->p2 = end;
 
+	if (sel->type == SEL_NONE)
+		sel->type = type;
+
 	switch (sel->type) {
 	case SEL_NONE:
-		sel->type = type;
+		assert(0);
 		break;
 	case SEL_REGULAR:
 		if (sel->p1.y > sel->p2.y ||
@@ -175,13 +181,39 @@ void term_sel_word(struct st_term *term, struct coord pos)
 {
 	struct coord start = pos;
 
-	while (start.x &&
-	       isword(term_pos(term, start)[-1].c))
-		start.x--;
+	while (1) {
+		struct coord prev = start;
 
-	while (pos.x < term->size.x - 1 &&
-	       isword(term_pos(term, pos)[1].c))
-		pos.x++;
+		if (prev.x) {
+			prev.x--;
+		} else if (prev.y) {
+			prev.y--;
+			prev.x = term->size.x - 1;
+		} else
+			break;
+
+		if (!isword(term_pos(term, prev)->c))
+			break;
+
+		start = prev;
+	}
+
+	while (1) {
+		struct coord next = pos;
+
+		if (next.x < term->size.x - 1) {
+			next.x++;
+		} else if (next.y < term->size.y - 1) {
+			next.y++;
+			next.x = 0;
+		} else
+			break;
+
+		if (!isword(term_pos(term, next)->c))
+			break;
+
+		pos = next;
+	}
 
 	term_sel_update(term, SEL_REGULAR, start, pos);
 }
