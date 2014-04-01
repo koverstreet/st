@@ -57,7 +57,6 @@
 #define SPACES_PER_TAB	8
 
 /* TERM value */
-//#define TERMNAME	"st-256color"
 #define TERMNAME	"xterm"
 
 #define BETWEEN(x, a, b)  ((a) <= (x) && (x) <= (b))

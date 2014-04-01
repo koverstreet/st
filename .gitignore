@@ -9,5 +9,6 @@ config.h
 tags
 cscope.*
 ncscope.*
+perf.data*
 
 !.gitignore

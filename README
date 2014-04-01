@@ -1,34 +1,73 @@
 st - simple terminal
 --------------------
-st is a simple virtual terminal emulator for X which sucks less.
+st is a simple xterm replacement - this is a fork of the original from the
+suckless project.
 
+NOTES ON THE FORK:
+------------------
 
-Requirements
-------------
-In order to build st you need the Xlib header files.
+I have slightly different priorities than the original project. When I first
+discovered st, I was delighted by the size of the codebase; unfortunately, the
+quality of the code left something to be desired.
 
+Personally, I care much more about aesthetics and elegance and /beauty/ than
+just code size.  Code size is an important metric; the same functionality in 3k
+loc is likely to be more elegant than an implementation in 30k lines. But
+modularity, readability, /elegancy/ are important too.
+
+We should write code to outlast us. This means it should be simple and clear to
+the people who come after us; small and modular and easy to work with.
+
+Also, the upstream project was all about stripping out functionality that could
+be done with other tools, in the name of orthogonality. This is great in
+principle, but they turn it into something of a religion. Often, the
+functionality in question (things like tabs or scrollback) are things that
+really shouldn't add much code _provided they're implemented cleanly_; the
+problem was that when first implemented in other projects people didn't go back
+and refactor, they just pile cruft on top of cruft. But that doesn't mean we
+have to make the same mistakes.
+
+Also, the most beautiful code in the world is of little relevance if people
+can't or won't use it because of mundane practical concerns. The way
+configuration is done, for example - a header file might seem clean and simple
+to the original author, but today people tend to expect and enjoy the
+functionality provided by things like gsettings. Yes, glib is fairly horrible in
+some ways, but let's try to integrate with the rest of the current desktop stack
+where it doesn't add too much pain, for the sake of the users.
+
+The modern desktop environment has brought a lot of genuinely useful
+functionality; the implementations may tend to be horrible, but let's try and
+fix things where and when possible, not ignore them and build up new castles in
+isolation.
+
+Requirements (debian packages):
+-------------------------------
+
+ * libx11-dev
+ * libxft-dev
+ * libfontconfig1-dev
+ * libfreetype6-dev
+ * libglib2.0-dev
 
 Installation
 ------------
-Edit config.mk to match your local setup (st is installed into
-the /usr/local namespace by default).
 
-Afterwards enter the following command to build and install st (if
-necessary as root):
+A simple make, make install should be all that's required. The makefile obeys
+the normal PREFIX and DESTDIR variables, and installs into /usr/local by
+default.
 
-    make clean install
+Configuration
+-------------
 
+The original suckless st was configured entirely through config.h; if you want
+to change the colour scheme or shortcut keys you'll still have to modify
+config.h, then rebuild and reinstall.
 
-Running st
-----------
-If you did not install st with make clean install, you must compile
-the st terminfo entry with the following command:
-
-    tic -s st.info
-
-See the man page for additional details.
+Other configuration options have been migrated to gsettings. There's no provided
+gui, but you can use dconf-editor (navigate to /org/evilpiepirate/st) or use the
+commandline dconf tools to change the default font and some other options.
 
 Credits
 -------
+Forked from http://st.suckless.org/ and heavily rewritten.
 Based on Aurélien APTEL <aurelien dot aptel at gmail dot com> bt source code.
-
