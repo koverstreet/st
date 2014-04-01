@@ -14,6 +14,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <time.h>
+#include <unistd.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -1311,7 +1312,7 @@ static void run(struct st_window *xw)
 
 int main(int argc, char *argv[])
 {
-	int i, bitm, xr, yr;
+	int opt, bitm, xr, yr;
 	unsigned wr, hr;
 	struct st_window xw;
 	char **opt_cmd = NULL;
@@ -1330,22 +1331,13 @@ int main(int argc, char *argv[])
 	xw.doubleclicktimeout	= g_settings_get_uint(xw.settings, "doubleclicktimeout");
 	xw.tripleclicktimeout	= g_settings_get_uint(xw.settings, "tripleclicktimeout");
 
-	for (i = 1; i < argc; i++) {
-		switch (argv[i][0] != '-' || argv[i][2] ? -1 : argv[i][1]) {
+	while ((opt = getopt(argc, argv, "+c:g:o:t:w:e:v") != -1))
+		switch (opt) {
 		case 'c':
-			if (++i < argc)
-				xw.class = argv[i];
+			xw.class = optarg;
 			break;
-		case 'e':
-			/* eat all remaining arguments */
-			if (++i < argc)
-				opt_cmd = &argv[i];
-			goto run;
 		case 'g':
-			if (++i >= argc)
-				break;
-
-			bitm = XParseGeometry(argv[i], &xr, &yr, &wr, &hr);
+			bitm = XParseGeometry(optarg, &xr, &yr, &wr, &hr);
 			if (bitm & XValue)
 				xw.fx = xr;
 			if (bitm & YValue)
@@ -1363,24 +1355,23 @@ int main(int argc, char *argv[])
 				xw.isfixed = True;
 			break;
 		case 'o':
-			if (++i < argc)
-				opt_io = argv[i];
+			opt_io = optarg;
 			break;
 		case 't':
-			if (++i < argc)
-				xw.default_title = argv[i];
+			xw.default_title = optarg;
 			break;
+		case 'w':
+			xw.embed = optarg;
+			break;
+		case 'e':
+			/* eat all remaining arguments */
+			opt_cmd = &argv[optind];
+			goto run;
 		case 'v':
 		default:
 			die(USAGE);
-		case 'w':
-			if (++i < argc)
-				xw.embed = argv[i];
-			break;
 		}
-	}
-
-      run:
+run:
 	setlocale(LC_CTYPE, "");
 	XSetLocaleModifiers("");
 	term_init(&xw.term, 80, 24, shell, opt_cmd, opt_io, xw.win,
