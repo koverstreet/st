@@ -10,7 +10,7 @@ X11INC = /usr/X11R6/include
 X11LIB = /usr/X11R6/lib
 GSETTINGS_SCHEMAS = /usr/share/glib-2.0/schemas
 
-CFLAGS		:= -MMD -g -std=gnu99 -O2 -Wall -Wextra -Werror	\
+CFLAGS		:= -MD -MP -g -std=gnu99 -O2 -Wall -Wextra -Werror	\
 	-Wno-sign-compare					\
 	-Wno-unused-parameter
 CPPFLAGS	:= -DVERSION=\"${VERSION}\"			\

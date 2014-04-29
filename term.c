@@ -114,9 +114,11 @@ static void term_sel_copy(struct st_term *term)
 			last--;
 
 		for (; gp <= last; gp++) {
-			int ret = FcUcs4ToUtf8(gp->c, ptr);
-			if (ret > 0)
-				ptr += ret;
+			int len;
+
+			if (gp->c &&
+			    (len = FcUcs4ToUtf8(gp->c, ptr) > 0))
+				ptr += len;
 			else
 				*ptr++ = ' ';
 		}
