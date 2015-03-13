@@ -1352,41 +1352,45 @@ void term_read(struct st_term *term)
 	int ret;
 
 	/* append read bytes to unprocessed bytes */
-	if ((ret = read(term->cmdfd,
-			term->cmdbuf + term->cmdbuflen,
-			sizeof(term->cmdbuf) - term->cmdbuflen)) < 0)
-		edie("Couldn't read from shell");
-
-	if (term->logfd != -1 &&
-	    xwrite(term->logfd, term->cmdbuf + term->cmdbuflen, ret) < 0) {
-		fprintf(stderr, "Error writing in %s:%s\n",
-			term->logfile, strerror(errno));
-		close(term->logfd);
-		term->logfd = -1;
-	}
-
-	/* process every complete utf8 char */
-	term->cmdbuflen += ret;
-	ptr = term->cmdbuf;
-
-	while (term->cmdbuflen) {
-		unsigned ucs;
-		int charsize = FcUtf8ToUcs4(ptr, &ucs, term->cmdbuflen);
-		if (charsize < 0) {
-			charsize = 1;
-			ucs = *ptr;
+	while ((ret = read(term->cmdfd,
+			   term->cmdbuf + term->cmdbuflen,
+			   sizeof(term->cmdbuf) - term->cmdbuflen)) > 0) {
+		if (term->logfd != -1 &&
+		    xwrite(term->logfd, term->cmdbuf + term->cmdbuflen, ret) < 0) {
+			fprintf(stderr, "Error writing in %s:%s\n",
+				term->logfile, strerror(errno));
+			close(term->logfd);
+			term->logfd = -1;
 		}
 
-		if (charsize > term->cmdbuflen)
-			break;
+		/* process every complete utf8 char */
+		term->cmdbuflen += ret;
+		ptr = term->cmdbuf;
 
-		tputc(term, ucs);
-		ptr += charsize;
-		term->cmdbuflen -= charsize;
+		while (term->cmdbuflen) {
+			unsigned ucs;
+			int charsize = FcUtf8ToUcs4(ptr, &ucs, term->cmdbuflen);
+			if (charsize < 0) {
+				charsize = 1;
+				ucs = *ptr;
+			}
+
+			if (charsize > term->cmdbuflen)
+				break;
+
+			tputc(term, ucs);
+			ptr += charsize;
+			term->cmdbuflen -= charsize;
+		}
+
+		/* keep any uncomplete utf8 char for the next call */
+		memmove(term->cmdbuf, ptr, term->cmdbuflen);
 	}
 
-	/* keep any uncomplete utf8 char for the next call */
-	memmove(term->cmdbuf, ptr, term->cmdbuflen);
+	if (!ret)
+		exit(EXIT_SUCCESS);
+	else if (errno != EAGAIN)
+		edie("Couldn't read from shell");
 }
 
 void term_mousereport(struct st_term *term, struct coord pos,
@@ -1590,14 +1594,21 @@ static void sigchld(int a)
 static void term_ttyinit(struct st_term *term, unsigned long windowid,
 			 char *shell, char **cmd)
 {
-	int m, s;
+	int master, slave, flags;
 	struct winsize w = { term->size.y, term->size.x, 0, 0 };
 
 	term->logfd = -1;
 
 	/* seems to work fine on linux, openbsd and freebsd */
-	if (openpty(&m, &s, NULL, NULL, &w) < 0)
+	if (openpty(&master, &slave, NULL, NULL, &w) < 0)
 		edie("openpty failed");
+
+	flags = fcntl(master, F_GETFL, 0);
+	if (flags == -1)
+		edie("fcntl get flags error");
+
+	if (fcntl(master, F_SETFL, flags|O_NONBLOCK))
+		edie("fcntl set flags error");
 
 	switch (pid = fork()) {
 	case -1:
@@ -1605,18 +1616,18 @@ static void term_ttyinit(struct st_term *term, unsigned long windowid,
 		break;
 	case 0:
 		setsid();	/* create a new process group */
-		dup2(s, STDIN_FILENO);
-		dup2(s, STDOUT_FILENO);
-		dup2(s, STDERR_FILENO);
-		if (ioctl(s, TIOCSCTTY, NULL) < 0)
+		dup2(slave, STDIN_FILENO);
+		dup2(slave, STDOUT_FILENO);
+		dup2(slave, STDERR_FILENO);
+		if (ioctl(slave, TIOCSCTTY, NULL) < 0)
 			edie("ioctl TIOCSCTTY failed");
-		close(s);
-		close(m);
+		close(slave);
+		close(master);
 		execsh(windowid, shell, cmd);
 		break;
 	default:
-		close(s);
-		term->cmdfd = m;
+		close(slave);
+		term->cmdfd = master;
 		signal(SIGCHLD, sigchld);
 		if (term->logfile) {
 			term->logfd = (!strcmp(term->logfile, "-")) ?

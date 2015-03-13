@@ -587,12 +587,6 @@ static void draw(struct st_window *xw)
 {
 	struct coord pos;
 
-	if (!xw->visible)
-		return;
-
-	if (!xw->term.dirty)
-		return;
-
 	xw->term.dirty = false;
 
 	for (pos.y = 0; pos.y < xw->term.size.y; pos.y++) {
@@ -1239,12 +1233,27 @@ static void cmessage(struct st_window *xw, XEvent *ev)
 	}
 }
 
+static struct timeval monotonic_gettime(void)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+
+	return (struct timeval) {
+		.tv_sec = now.tv_sec,
+		.tv_usec = now.tv_nsec / 1000,
+	};
+}
+
 static void run(struct st_window *xw)
 {
 	XEvent ev;
 	fd_set rfd;
 	int xfd = XConnectionNumber(xw->dpy);
-	struct timeval now, next_redraw, timeout, *tv = NULL;
+	struct timeval now, next_redraw, t, *timeout = NULL, delay = {
+		.tv_sec = 0,
+		.tv_usec = 1000 * 1000 / xw->fps,
+	};
 
 	void (*handler[]) (struct st_window *, XEvent *) = {
 		[KeyPress] = kpress,
@@ -1262,50 +1271,43 @@ static void run(struct st_window *xw)
 		[SelectionNotify] = selnotify,
 		[SelectionRequest] = selrequest,};
 
-	gettimeofday(&next_redraw, NULL);
+	next_redraw = monotonic_gettime();
 
 	while (1) {
 		FD_ZERO(&rfd);
 		FD_SET(xw->term.cmdfd, &rfd);
 		FD_SET(xfd, &rfd);
 
-		if (select(max(xfd, xw->term.cmdfd) + 1,
-			   &rfd, NULL, NULL, tv) < 0) {
-			if (errno == EINTR)
-				continue;
+		if ((select(max(xfd, xw->term.cmdfd) + 1,
+			    &rfd, NULL, NULL, timeout) < 0) &&
+		    errno != EINTR)
 			edie("select failed");
-		}
 
-		if (FD_ISSET(xw->term.cmdfd, &rfd))
-			term_read(&xw->term);
+		term_read(&xw->term);
 
 		while (XPending(xw->dpy)) {
 			XNextEvent(xw->dpy, &ev);
-			if (XFilterEvent(&ev, None))
-				continue;
 
-			if (ev.type < ARRAY_SIZE(handler) &&
+			if (!XFilterEvent(&ev, None) &&
+			    ev.type < ARRAY_SIZE(handler) &&
 			    handler[ev.type])
 				(handler[ev.type])(xw, &ev);
 		}
 
-		gettimeofday(&now, NULL);
+		now = monotonic_gettime();
 
-		timeout.tv_sec = next_redraw.tv_sec - now.tv_sec;
-		timeout.tv_usec = next_redraw.tv_usec - now.tv_usec;
-
-		while (timeout.tv_usec < 0) {
-			timeout.tv_usec += 1000000;
-			timeout.tv_sec--;
+		if (xw->visible &&
+		    xw->term.dirty &&
+		    timercmp(&now, &next_redraw, >=)) {
+			draw(xw);
+			timeradd(&now, &delay, &next_redraw);
 		}
 
-		if (timeout.tv_sec < 0) {
-			draw(xw);
-			next_redraw = now;
-			next_redraw.tv_usec += 1000 * 1000 / xw->fps;
-			tv = NULL;
+		if (xw->visible && xw->term.dirty) {
+			timersub(&next_redraw, &now, &t);
+			timeout = &t;
 		} else {
-			tv = &timeout;
+			timeout = NULL;
 		}
 	}
 }
